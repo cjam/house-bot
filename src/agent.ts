@@ -24,6 +24,12 @@ export type AskParams = {
   model: string;
   mcpServers: Record<string, McpServerConfig>;
   canUseTool: CanUseTool;
+  /**
+   * Built-in (non-MCP) tools to load into the prompt. Keep this to the tools
+   * the permission gate actually allows — loading the full Claude Code tool set
+   * wastes input tokens on schemas we always deny.
+   */
+  builtinTools: string[];
 };
 
 export type AskResult = {
@@ -43,6 +49,7 @@ export async function ask(params: AskParams): Promise<AskResult> {
       model: params.model,
       mcpServers: params.mcpServers,
       canUseTool: params.canUseTool,
+      tools: params.builtinTools,
     },
   })) {
     sessionId = extractSessionId(msg) ?? sessionId;

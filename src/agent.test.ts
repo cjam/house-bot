@@ -83,9 +83,11 @@ describe("ask", () => {
       model: "claude-opus-4-8",
       mcpServers: {},
       canUseTool: async () => ({ behavior: "deny", message: "no" }),
+      builtinTools: ["WebSearch"],
     });
 
     expect(capturedOptions?.resume).toBe("previous-session");
+    expect(capturedOptions?.tools).toEqual(["WebSearch"]);
     expect(result.sessionId).toBe("s1");
     expect(result.text).toBe("hi");
   });

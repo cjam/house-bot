@@ -1,9 +1,26 @@
 import { describe, expect, test } from "bun:test";
 import type { Update } from "grammy/types";
-import { createBot, chunkText } from "./index";
+import { createBot, chunkText, errorReplyFor } from "./index";
 import { createSessionStore } from "./sessions";
 import type { AskParams, AskResult } from "./agent";
 import type { Config } from "./config";
+
+describe("errorReplyFor", () => {
+  test("gives a rate-limit-specific message for 429 / rate limit errors", () => {
+    const msg = errorReplyFor(new Error("Request rejected (429) ... rate limit of 10,000 input tokens"));
+    expect(msg.toLowerCase()).toContain("rate limit");
+  });
+
+  test("gives a generic message for other errors", () => {
+    const msg = errorReplyFor(new Error("boom"));
+    expect(msg.length).toBeGreaterThan(0);
+    expect(msg.toLowerCase()).not.toContain("rate limit");
+  });
+
+  test("handles non-Error throwables", () => {
+    expect(errorReplyFor("some string")).toBeTruthy();
+  });
+});
 
 describe("chunkText", () => {
   test("returns the whole text in one chunk when under the limit", () => {
@@ -131,6 +148,34 @@ describe("createBot allowlist", () => {
 
     expect(askCalls.length).toBe(1);
     expect(sentMessages.some((m: any) => m.method === "sendMessage")).toBe(true);
+  });
+
+  test("catches a failing agent turn, replies with an error, and does not persist a session", async () => {
+    const sentMessages: any[] = [];
+    const sessionStore = await tempSessionStore();
+
+    const bot = createBot({
+      config: baseConfig(),
+      sessionStore,
+      ask: async (): Promise<AskResult> => {
+        throw new Error("Request rejected (429) rate limit exceeded");
+      },
+      systemPrompt: "be helpful",
+    });
+    bot.botInfo = BOT_INFO;
+    bot.api.config.use((_prev, method, payload) => {
+      sentMessages.push({ method, payload });
+      return Promise.resolve({ ok: true, result: true } as never);
+    });
+
+    // Must not reject out of the handler (that would trigger grammY's default
+    // error handler and dump the whole context object).
+    await expect(bot.handleUpdate(textUpdate(1, 100, "hello"))).resolves.toBeUndefined();
+
+    const replies = sentMessages.filter((m) => m.method === "sendMessage");
+    expect(replies.length).toBeGreaterThan(0);
+    expect(String(replies[replies.length - 1].payload.text).toLowerCase()).toContain("rate limit");
+    expect(sessionStore.get(100)).toBeUndefined();
   });
 });
 
