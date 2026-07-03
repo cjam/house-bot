@@ -68,29 +68,85 @@ export type McpProbeResult = {
   servers: { name: string; status: string }[];
 };
 
-function isInitMessage(
-  msg: SDKMessage,
-): msg is Extract<SDKMessage, { type: "system"; subtype: "init" }> {
-  return msg.type === "system" && msg.subtype === "init";
-}
+export type ProbeMcpOptions = {
+  /** Give up waiting for servers to leave "pending" after this long. */
+  timeoutMs?: number;
+  /** How often to re-check server status while waiting. */
+  pollIntervalMs?: number;
+};
 
+const DEFAULT_PROBE_TIMEOUT_MS = 15_000;
+const DEFAULT_PROBE_POLL_MS = 250;
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Probe configured MCP servers and report which tools they expose.
+ *
+ * The `system/init` message is emitted before Streamable-HTTP/SSE servers
+ * finish their (asynchronous) connection handshake, so reading tools from it
+ * races the connection and reports "pending" with zero tools. Instead we hold
+ * the session open with a streaming input, drain its messages so control
+ * responses get pumped, and poll `mcpServerStatus()` until every server has
+ * settled out of "pending" (or we hit `timeoutMs`).
+ */
 export async function probeMcpServers(
   mcpServers: Record<string, McpServerConfig>,
   model: string,
+  options: ProbeMcpOptions = {},
 ): Promise<McpProbeResult> {
-  const q = query({
-    prompt: "Reply with OK.",
-    options: { mcpServers, model, maxTurns: 1 },
-  });
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+  const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_PROBE_POLL_MS;
 
-  for await (const msg of q) {
-    if (isInitMessage(msg)) {
-      const tools: string[] = msg.tools.filter((toolName: string) => toolName.startsWith("mcp__"));
-      return { tools, servers: msg.mcp_servers };
-    }
+  // An input stream that yields nothing keeps the session alive (no model turn
+  // runs) until we resolve `closeInput`, at which point the subprocess exits.
+  let closeInput!: () => void;
+  const inputClosed = new Promise<void>((resolve) => {
+    closeInput = resolve;
+  });
+  async function* heldOpenInput(): AsyncGenerator<never> {
+    await inputClosed;
   }
 
-  throw new Error("Agent SDK did not emit an init message during MCP probe");
+  const q = query({
+    prompt: heldOpenInput(),
+    options: { mcpServers, model },
+  });
+
+  // Draining the response stream pumps the transport so control responses
+  // (from mcpServerStatus) are actually read. We ignore the messages.
+  const drain = (async () => {
+    try {
+      for await (const _msg of q) {
+        void _msg;
+      }
+    } catch {
+      // Stream teardown on close/interrupt is expected; ignore.
+    }
+  })();
+
+  try {
+    const deadline = Date.now() + timeoutMs;
+    let statuses = await q.mcpServerStatus();
+    while (statuses.some((s) => s.status === "pending") && Date.now() < deadline) {
+      await delay(pollIntervalMs);
+      statuses = await q.mcpServerStatus();
+    }
+
+    const tools = statuses.flatMap((server) =>
+      (server.tools ?? []).map((t) => `mcp__${server.name}__${t.name}`),
+    );
+    const servers = statuses.map((server) => ({ name: server.name, status: server.status }));
+    return { tools, servers };
+  } finally {
+    closeInput();
+    try {
+      await q.interrupt();
+    } catch {
+      // No active turn to interrupt when the probe never sent a prompt; ignore.
+    }
+    await drain;
+  }
 }
 
 export function describeMcpProbe(
