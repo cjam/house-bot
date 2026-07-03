@@ -73,9 +73,25 @@ The container runs as `root` so `$HOME` (`/root`) is deterministic for the sessi
 harden the image to run as a non-root `bun` user, repoint the `claude-sessions` volume to
 `/home/bun/.claude` instead.
 
-On ARM hosts (e.g. Raspberry Pi), build the image *on* the target architecture — the Agent SDK's
-native binary is a platform-specific `optionalDependency`, and `bun install` needs to run on
-`linux-arm64` for that variant to resolve.
+### Prebuilt image (GitHub Container Registry)
+
+Every push to `main` (and every `v*` tag) is built by the
+[`docker-publish`](.github/workflows/docker-publish.yml) GitHub Actions workflow and published to
+`ghcr.io/cjam/house-bot` for both `linux/amd64` and `linux/arm64` — so you can pull it straight
+onto an x86 server or an ARM Raspberry Pi without building locally:
+
+```bash
+docker pull ghcr.io/cjam/house-bot:latest
+```
+
+Tags: `latest` (default branch), the branch name, `sha-<commit>`, and semver tags (`1.2.3`,
+`1.2`) when you push a `v*` git tag. To run the prebuilt image with compose, swap `build: .` for
+`image: ghcr.io/cjam/house-bot:latest` in `docker-compose.yml`.
+
+If you'd rather build locally on an ARM host, build the image *on* the target architecture — the
+Agent SDK's native binary is a platform-specific `optionalDependency`, and `bun install` needs to
+run on `linux-arm64` for that variant to resolve. (The CI workflow handles this by building the
+arm64 image under QEMU emulation.)
 
 ## Usage
 
