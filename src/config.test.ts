@@ -16,15 +16,23 @@ describe("parseAllowlist", () => {
 });
 
 describe("buildMcpServers", () => {
-  test("includes mealie only when MEALIE_URL is set", () => {
-    const servers = buildMcpServers({});
-    expect(servers.mealie).toBeUndefined();
+  test("returns an empty object when MCP_SERVERS is unset", () => {
+    expect(buildMcpServers({})).toEqual({});
   });
 
-  test("mealie present with Authorization header when token set", () => {
+  test("returns an empty object when MCP_SERVERS is blank", () => {
+    expect(buildMcpServers({ MCP_SERVERS: "   " })).toEqual({});
+  });
+
+  test("parses a single server from JSON", () => {
     const servers = buildMcpServers({
-      MEALIE_URL: "http://mealie.local/api/mcp",
-      MEALIE_TOKEN: "secret-token",
+      MCP_SERVERS: JSON.stringify({
+        mealie: {
+          type: "http",
+          url: "http://mealie.local/api/mcp",
+          headers: { Authorization: "Bearer secret-token" },
+        },
+      }),
     });
     expect(servers.mealie).toEqual({
       type: "http",
@@ -33,13 +41,30 @@ describe("buildMcpServers", () => {
     });
   });
 
-  test("Authorization header omitted when no token set", () => {
-    const servers = buildMcpServers({ MEALIE_URL: "http://mealie.local/api/mcp" });
-    expect(servers.mealie).toEqual({
-      type: "http",
-      url: "http://mealie.local/api/mcp",
-      headers: {},
+  test("parses multiple servers of different transports", () => {
+    const servers = buildMcpServers({
+      MCP_SERVERS: JSON.stringify({
+        mealie: { type: "http", url: "http://mealie.local/api/mcp" },
+        homebox: { type: "sse", url: "http://homebox.local/mcp" },
+      }),
     });
+    expect(Object.keys(servers).sort()).toEqual(["homebox", "mealie"]);
+    expect(servers.homebox).toEqual({ type: "sse", url: "http://homebox.local/mcp" });
+  });
+
+  test("throws on invalid JSON", () => {
+    expect(() => buildMcpServers({ MCP_SERVERS: "{not json" })).toThrow(/MCP_SERVERS/);
+  });
+
+  test("throws when the JSON is not an object", () => {
+    expect(() => buildMcpServers({ MCP_SERVERS: "[]" })).toThrow(/MCP_SERVERS/);
+    expect(() => buildMcpServers({ MCP_SERVERS: '"a string"' })).toThrow(/MCP_SERVERS/);
+  });
+
+  test("throws when a server entry is not an object", () => {
+    expect(() =>
+      buildMcpServers({ MCP_SERVERS: JSON.stringify({ mealie: "http://x" }) }),
+    ).toThrow(/mealie/);
   });
 });
 
