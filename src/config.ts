@@ -13,17 +13,27 @@ export function parseAllowlist(csv: string | undefined): Set<number> {
 }
 
 export function buildMcpServers(env: Env): Record<string, McpServerConfig> {
-  const servers: Record<string, McpServerConfig> = {};
+  const raw = env.MCP_SERVERS?.trim();
+  if (!raw) return {};
 
-  if (env.MEALIE_URL) {
-    servers.mealie = {
-      type: "http",
-      url: env.MEALIE_URL,
-      headers: env.MEALIE_TOKEN ? { Authorization: `Bearer ${env.MEALIE_TOKEN}` } : {},
-    };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`MCP_SERVERS is not valid JSON: ${(err as Error).message}`);
   }
 
-  return servers;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("MCP_SERVERS must be a JSON object mapping server names to configs");
+  }
+
+  for (const [name, config] of Object.entries(parsed)) {
+    if (typeof config !== "object" || config === null || Array.isArray(config)) {
+      throw new Error(`MCP_SERVERS["${name}"] must be an object`);
+    }
+  }
+
+  return parsed as Record<string, McpServerConfig>;
 }
 
 export function required(env: Env, key: string): string {

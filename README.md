@@ -27,12 +27,32 @@ Message your new bot, then visit
 look for `"chat":{"id": ...}`. For a group chat, add the bot to the group first. Put the numeric
 ID(s), comma-separated, in `ALLOWED_CHAT_IDS`. Any chat not in this list is silently ignored.
 
-### 3. Get a Mealie API token
+### 3. Configure MCP servers
 
-In Mealie, go to your user profile → API Tokens → create a new token. Set `MEALIE_URL` to your
-Mealie instance's MCP endpoint (e.g. `http://mealie.local:9000/api/mcp`) and `MEALIE_TOKEN` to the
-token. The bot connects to Mealie in-process, so a LAN-only URL is fine — no need to expose it to
-the internet.
+All MCP servers are configured through a single `MCP_SERVERS` environment variable — a JSON object
+keyed by server name, where each value is an MCP server config. Add as many as you like; no code
+changes or per-server env vars needed.
+
+```json
+{
+  "mealie": {
+    "type": "http",
+    "url": "http://mealie.local:9000/api/mcp",
+    "headers": { "Authorization": "Bearer YOUR_MEALIE_TOKEN" }
+  }
+}
+```
+
+In `.env` this must be on a single line:
+
+```
+MCP_SERVERS={"mealie":{"type":"http","url":"http://mealie.local:9000/api/mcp","headers":{"Authorization":"Bearer YOUR_MEALIE_TOKEN"}}}
+```
+
+Each value follows the Agent SDK's MCP server config shape: `type` is `"http"` or `"sse"`, plus a
+`url` and optional `headers`. Put the full `Authorization` header (token included) directly in the
+JSON. For Mealie, create the token under your Mealie user profile → API Tokens. The bot connects
+in-process, so LAN-only URLs are fine — no need to expose anything to the internet.
 
 ### 4. Anthropic API key
 
@@ -104,20 +124,25 @@ arm64 image under QEMU emulation.)
 
 ## Adding more MCP servers
 
-MCP servers are built from environment variables in `src/config.ts`, in `buildMcpServers()`. To
-add one (e.g. Homebox), add its env vars to `.env.example` and extend the function:
+Add another key to the `MCP_SERVERS` JSON — no code changes needed. For example, to add Homebox
+alongside Mealie:
 
-```ts
-if (env.HOMEBOX_URL) {
-  servers.homebox = {
-    type: "http",
-    url: env.HOMEBOX_URL,
-    headers: env.HOMEBOX_TOKEN ? { Authorization: `Bearer ${env.HOMEBOX_TOKEN}` } : {},
-  };
+```json
+{
+  "mealie": {
+    "type": "http",
+    "url": "http://mealie.local:9000/api/mcp",
+    "headers": { "Authorization": "Bearer MEALIE_TOKEN" }
+  },
+  "homebox": {
+    "type": "http",
+    "url": "http://homebox.local/mcp",
+    "headers": { "Authorization": "Bearer HOMEBOX_TOKEN" }
+  }
 }
 ```
 
-If a server doesn't speak Streamable HTTP, use `type: "sse"` instead — same shape otherwise. The
+If a server doesn't speak Streamable HTTP, use `"type": "sse"` instead — same shape otherwise. The
 startup probe will tell you which transport failed and suggest the swap.
 
 ## Persistence & security notes
