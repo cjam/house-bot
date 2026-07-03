@@ -130,25 +130,69 @@ describe("describeMcpProbe", () => {
   });
 });
 
+/**
+ * Builds a fake Query: an async generator (the response stream) augmented with
+ * the control methods probeMcpServers relies on. `statusSequence` is returned
+ * from successive mcpServerStatus() calls, letting a test model a server that
+ * starts "pending" and later settles to "connected".
+ */
+function fakeQuery(statusSequence: Array<Array<Record<string, unknown>>>) {
+  let call = 0;
+  let released: () => void;
+  const done = new Promise<void>((resolve) => {
+    released = resolve;
+  });
+  const gen = (async function* () {
+    yield { type: "system", subtype: "init" };
+    await done; // stay open until interrupt(), mirroring a held-open input
+  })() as AsyncGenerator<unknown> & {
+    mcpServerStatus: () => Promise<unknown>;
+    interrupt: () => Promise<void>;
+  };
+  gen.mcpServerStatus = async () => {
+    const idx = Math.min(call, statusSequence.length - 1);
+    call += 1;
+    return statusSequence[idx];
+  };
+  gen.interrupt = async () => {
+    released();
+  };
+  return gen;
+}
+
 describe("probeMcpServers", () => {
-  test("returns mcp__* tools and server statuses from the init message", async () => {
+  test("waits for a pending server to settle, then reports its tools", async () => {
     mock.module("@anthropic-ai/claude-agent-sdk", () => ({
-      query: () => {
-        return (async function* () {
-          yield {
-            type: "system",
-            subtype: "init",
-            tools: ["Read", "mcp__mealie__get_recipe"],
-            mcp_servers: [{ name: "mealie", status: "connected" }],
-          };
-          yield { type: "assistant", message: { content: [{ type: "text", text: "OK" }] } };
-        })();
-      },
+      query: () =>
+        fakeQuery([
+          [{ name: "mealie", status: "pending" }],
+          [
+            {
+              name: "mealie",
+              status: "connected",
+              tools: [{ name: "get_recipe" }, { name: "list_recipes" }],
+            },
+          ],
+        ]),
     }));
 
     const { probeMcpServers } = await import("./agent");
-    const result = await probeMcpServers({}, "claude-opus-4-8");
-    expect(result.tools).toEqual(["mcp__mealie__get_recipe"]);
+    const result = await probeMcpServers({}, "claude-opus-4-8", { pollIntervalMs: 1 });
+    expect(result.tools).toEqual(["mcp__mealie__get_recipe", "mcp__mealie__list_recipes"]);
     expect(result.servers).toEqual([{ name: "mealie", status: "connected" }]);
+  });
+
+  test("gives up and reports pending when the timeout elapses", async () => {
+    mock.module("@anthropic-ai/claude-agent-sdk", () => ({
+      query: () => fakeQuery([[{ name: "mealie", status: "pending" }]]),
+    }));
+
+    const { probeMcpServers } = await import("./agent");
+    const result = await probeMcpServers({}, "claude-opus-4-8", {
+      timeoutMs: 5,
+      pollIntervalMs: 1,
+    });
+    expect(result.tools).toEqual([]);
+    expect(result.servers).toEqual([{ name: "mealie", status: "pending" }]);
   });
 });
