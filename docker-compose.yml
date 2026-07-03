@@ -1,0 +1,12 @@
+services:
+  house-bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - claude-sessions:/root/.claude
+      - bot-data:/app/data
+
+volumes:
+  claude-sessions:
+  bot-data:
