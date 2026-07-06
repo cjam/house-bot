@@ -70,9 +70,23 @@ bun run typecheck
 bun start         # or `bun run dev` for --watch
 ```
 
-On boot the bot probes every configured MCP server and logs the resolved `mcp__*` tool list (or a
-clear error). If an HTTP-transport MCP server fails to connect, the log includes a hint to try
-`type: "sse"` instead — useful if you're not sure which transport your server speaks.
+### Dev container
+
+`.devcontainer/` defines a ready-to-go environment (Bun matching the production image, plus git and
+the GitHub CLI). Open the repo in VS Code and "Reopen in Container", or use the devcontainer CLI —
+`bun install` runs automatically on create. `bun test` and `bun run typecheck` need no secrets; to
+run the bot, copy `.env.example` to `.env` (Bun auto-loads it) and fill in the values.
+
+On boot the bot connects to every configured MCP server and logs the resolved `mcp__*` tool list
+(or a clear error if a server is unreachable — the bot still starts, just without that server's
+tools).
+
+Each server is fronted by an in-process proxy that re-exposes its tools under names short enough to
+satisfy the Anthropic Messages API's 64-character tool-name limit. Tools whose namespaced name
+(`mcp__<server>__<tool>`) would exceed 64 chars — common for servers that auto-name tools from long
+route/operation IDs, like Mealie — are truncated and suffixed with a short hash; the startup log
+notes how many were shortened. Without this, a single over-long name makes the API reject the whole
+request, so the model ends up with *no* MCP tools.
 
 ## Docker
 
@@ -143,7 +157,7 @@ alongside Mealie:
 ```
 
 If a server doesn't speak Streamable HTTP, use `"type": "sse"` instead — same shape otherwise. The
-startup probe will tell you which transport failed and suggest the swap.
+startup log will tell you if a server failed to connect.
 
 ## Persistence & security notes
 

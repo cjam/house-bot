@@ -1,8 +1,10 @@
 import { Bot } from "grammy";
 import { run, sequentialize } from "@grammyjs/runner";
+import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
 import { loadConfig, type Config } from "./config";
 import { createSessionStore, type SessionStore } from "./sessions";
-import { ask as realAsk, probeMcpServers, describeMcpProbe, type AskParams, type AskResult } from "./agent";
+import { ask as realAsk, type AskParams, type AskResult } from "./agent";
+import { createMcpProxies } from "./mcp-proxy";
 import { canUseTool, ALLOWED_BUILTIN_TOOLS } from "./tools";
 
 const SYSTEM_PROMPT =
@@ -35,6 +37,13 @@ export type BotDeps = {
   sessionStore: SessionStore;
   ask: (params: AskParams) => Promise<AskResult>;
   systemPrompt: string;
+  /**
+   * Produces the MCP servers for a single agent turn. Each turn needs its own
+   * proxy instances (the agent query connects its own transport to them), so
+   * this is a factory rather than a static record. Defaults to the raw servers
+   * from config when omitted (used in tests).
+   */
+  mcpServers?: () => Record<string, McpServerConfig>;
 };
 
 export function createBot(deps: BotDeps): Bot {
@@ -70,7 +79,7 @@ export function createBot(deps: BotDeps): Bot {
         resume: deps.sessionStore.get(chatId),
         systemPrompt: deps.systemPrompt,
         model: deps.config.model,
-        mcpServers: deps.config.mcpServers,
+        mcpServers: deps.mcpServers ? deps.mcpServers() : deps.config.mcpServers,
         canUseTool,
         builtinTools: [...ALLOWED_BUILTIN_TOOLS],
       });
@@ -108,14 +117,10 @@ async function main() {
   const sessionStore = createSessionStore(config.sessionFile);
   await sessionStore.load();
 
-  console.log("Probing MCP servers...");
-  try {
-    const probe = await probeMcpServers(config.mcpServers, config.model);
-    for (const line of describeMcpProbe(probe, config.mcpServers)) {
-      console.log(line);
-    }
-  } catch (err) {
-    console.error("MCP probe failed:", err);
+  console.log("Connecting MCP servers...");
+  const proxies = await createMcpProxies(config.mcpServers, (line) => console.log(line));
+  for (const line of proxies.describe()) {
+    console.log(line);
   }
 
   const bot = createBot({
@@ -123,6 +128,7 @@ async function main() {
     sessionStore,
     ask: realAsk,
     systemPrompt: SYSTEM_PROMPT,
+    mcpServers: () => proxies.buildServers(),
   });
 
   const runner = run(bot);
@@ -130,6 +136,7 @@ async function main() {
 
   const stop = () => {
     console.log("Shutting down...");
+    void proxies.close();
     void runner.stop();
   };
   process.once("SIGINT", stop);
