@@ -70,6 +70,13 @@ bun run typecheck
 bun start         # or `bun run dev` for --watch
 ```
 
+### Dev container
+
+`.devcontainer/` defines a ready-to-go environment (Bun matching the production image, plus git and
+the GitHub CLI). Open the repo in VS Code and "Reopen in Container", or use the devcontainer CLI —
+`bun install` runs automatically on create. `bun test` and `bun run typecheck` need no secrets; to
+run the bot, copy `.env.example` to `.env` (Bun auto-loads it) and fill in the values.
+
 On boot the bot connects to every configured MCP server and logs the resolved `mcp__*` tool list
 (or a clear error if a server is unreachable — the bot still starts, just without that server's
 tools).

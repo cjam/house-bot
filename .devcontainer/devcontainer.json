@@ -1,0 +1,53 @@
+{
+  "name": "house-bot",
+
+  // Same runtime as production (Dockerfile uses oven/bun:1-slim). The non-slim
+  // tag adds the extra OS tooling that's handy in a dev shell.
+  "image": "oven/bun:1",
+
+  "features": {
+    // A sane non-root user (`bun` already exists in the image, uid 1000) with
+    // sudo, plus curl/ca-certificates/etc.
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "username": "bun",
+      "installZsh": false,
+      "upgradePackages": true
+    },
+    "ghcr.io/devcontainers/features/git:1": {},
+    // Handy for PRs/issues while working on the repo; not required to build.
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "oven.bun-vscode",
+        "ms-azuretools.vscode-docker"
+      ],
+      "settings": {
+        // Use the workspace TypeScript so editor and `bun run typecheck` agree.
+        "typescript.tsdk": "node_modules/typescript/lib",
+        "typescript.enablePromptUseWorkspaceTsdk": true,
+        // This project is Bun-only; steer VS Code's JS tooling toward it.
+        "npm.packageManager": "bun",
+        "debug.javascript.defaultRuntimeExecutable": {
+          "pwa-node": "bun"
+        },
+        "files.eol": "\n"
+      }
+    }
+  },
+
+  // Install dependencies once the container is up. Bun reads the lockfile, and
+  // pulls the correct platform binary for @anthropic-ai/claude-agent-sdk.
+  "postCreateCommand": "bun install",
+
+  "remoteUser": "bun",
+
+  // Bun auto-loads a `.env` from the workspace root at runtime, so copy
+  // `.env.example` to `.env` and fill it in to run `bun start`. `bun test` and
+  // `bun run typecheck` need no secrets.
+  "containerEnv": {
+    "SESSION_FILE": "./data/sessions.json"
+  }
+}
