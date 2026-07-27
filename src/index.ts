@@ -7,20 +7,17 @@ import { ask as realAsk, type AskParams, type AskResult } from "./agent";
 import { createMcpTools } from "./mcp";
 import { resolveProvider } from "./provider";
 
-const SYSTEM_PROMPT =
-  "You are a concise, practical household assistant. Help with meal planning, recipes, " +
-  "inventory, and other home-management tasks using the tools available to you. Keep " +
-  "replies short and actionable. Don't guess at information a tool could answer.";
-
 const REPLY_CHUNK_SIZE = 4000;
 
 /**
- * Append today's date to the system prompt. The Claude Agent SDK used to supply
- * this automatically; the plain AI SDK does not, so without it the model can't
- * reason about relative dates ("this week", "today's meals"). Uses the process
- * timezone — set the TZ env var to control it.
+ * Compose the full system prompt for a turn: the deployment's base prompt
+ * (configurable via SYSTEM_PROMPT) plus always-on runtime context the model
+ * can't do without. Today the always-on layer is just the date — the Claude
+ * Agent SDK used to supply this automatically; the plain AI SDK does not, so
+ * without it the model can't reason about relative dates ("this week",
+ * "today's meals"). Uses the process timezone — set the TZ env var to control it.
  */
-export function systemPromptWithDate(base: string, now: Date = new Date()): string {
+export function buildSystemPrompt(base: string, now: Date = new Date()): string {
   const date = new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     year: "numeric",
@@ -91,7 +88,7 @@ export function createBot(deps: BotDeps): Bot {
       result = await deps.ask({
         messages: deps.sessionStore.get(chatId) ?? [],
         prompt: ctx.message.text,
-        systemPrompt: systemPromptWithDate(deps.systemPrompt),
+        systemPrompt: buildSystemPrompt(deps.systemPrompt),
         model: deps.model,
         tools: deps.tools,
         maxSteps: deps.config.maxSteps,
@@ -150,7 +147,7 @@ async function main() {
     config,
     sessionStore,
     ask: realAsk,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: config.systemPrompt,
     model,
     tools,
   });

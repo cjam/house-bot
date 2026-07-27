@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { parseAllowlist, buildMcpServers, required, loadConfig } from "./config";
+import {
+  parseAllowlist,
+  buildMcpServers,
+  required,
+  loadConfig,
+  DEFAULT_SYSTEM_PROMPT,
+} from "./config";
 
 const BASE_ENV = { OPENROUTER_API_KEY: "sk-test", TELEGRAM_TOKEN: "bot-token" };
 
@@ -105,6 +111,19 @@ describe("loadConfig", () => {
     });
     expect(config.apiKey).toBe("sk-ant");
     expect(config.model).toBe("claude-opus-4-8");
+  });
+
+  test("defaults systemPrompt to DEFAULT_SYSTEM_PROMPT", () => {
+    expect(loadConfig(BASE_ENV).systemPrompt).toBe(DEFAULT_SYSTEM_PROMPT);
+  });
+
+  test("SYSTEM_PROMPT overrides the default base prompt", () => {
+    const config = loadConfig({ ...BASE_ENV, SYSTEM_PROMPT: "  You are a garden assistant.  " });
+    expect(config.systemPrompt).toBe("You are a garden assistant.");
+  });
+
+  test("blank SYSTEM_PROMPT falls back to the default", () => {
+    expect(loadConfig({ ...BASE_ENV, SYSTEM_PROMPT: "   " }).systemPrompt).toBe(DEFAULT_SYSTEM_PROMPT);
   });
 
   test("defaults maxSteps to 12 and webSearch off", () => {

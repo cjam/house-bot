@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Update } from "grammy/types";
 import { MockLanguageModelV4 } from "ai/test";
-import { createBot, chunkText, errorReplyFor, systemPromptWithDate } from "./index";
+import { createBot, chunkText, errorReplyFor, buildSystemPrompt } from "./index";
 import { createSessionStore } from "./sessions";
 import type { AskParams, AskResult } from "./agent";
 import type { Config } from "./config";
@@ -47,16 +47,16 @@ describe("chunkText", () => {
   });
 });
 
-describe("systemPromptWithDate", () => {
+describe("buildSystemPrompt", () => {
   test("appends today's date to the base prompt", () => {
-    const out = systemPromptWithDate("BASE", new Date("2026-07-27T12:00:00Z"));
+    const out = buildSystemPrompt("BASE", new Date("2026-07-27T12:00:00Z"));
     expect(out.startsWith("BASE")).toBe(true);
     expect(out).toContain("Today's date is");
     expect(out).toContain("2026");
   });
 
   test("names the weekday so the model can reason about 'this week'", () => {
-    const out = systemPromptWithDate("BASE", new Date("2026-07-27T18:00:00Z"));
+    const out = buildSystemPrompt("BASE", new Date("2026-07-27T18:00:00Z"));
     expect(out).toMatch(/Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday/);
   });
 });
@@ -82,6 +82,7 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     telegramToken: "test-token",
     allowedChatIds: new Set([100]),
     mcpServers: {},
+    systemPrompt: "be helpful",
     provider: "openrouter",
     apiKey: "sk-test",
     model: "anthropic/claude-sonnet-4.5",

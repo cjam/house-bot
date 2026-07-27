@@ -93,10 +93,23 @@ function parseProvider(env: Env): Provider {
   throw new Error(`PROVIDER must be one of ${Object.keys(PROVIDERS).join(", ")} (got "${value}")`);
 }
 
+/**
+ * Default persona/instructions. Overridable per deployment via SYSTEM_PROMPT so
+ * the bot can be tailored to whatever MCP servers an instance exposes. Always-on
+ * runtime context (today's date, etc.) is layered on top of this at request time,
+ * so a custom prompt can't accidentally drop it.
+ */
+export const DEFAULT_SYSTEM_PROMPT =
+  "You are a concise, practical household assistant. Help with meal planning, recipes, " +
+  "inventory, and other home-management tasks using the tools available to you. Keep " +
+  "replies short and actionable. Don't guess at information a tool could answer.";
+
 export type Config = {
   telegramToken: string;
   allowedChatIds: Set<number>;
   mcpServers: Record<string, McpServerConfig>;
+  /** Base persona/instructions for the agent (from SYSTEM_PROMPT, or the default). */
+  systemPrompt: string;
   /** Which provider the model runs on. */
   provider: Provider;
   /** API key for the selected provider. */
@@ -119,6 +132,7 @@ export function loadConfig(env: Env = process.env): Config {
     telegramToken: required(env, "TELEGRAM_TOKEN"),
     allowedChatIds: parseAllowlist(env.ALLOWED_CHAT_IDS),
     mcpServers: buildMcpServers(env),
+    systemPrompt: env.SYSTEM_PROMPT?.trim() || DEFAULT_SYSTEM_PROMPT,
     provider,
     apiKey: required(env, spec.keyEnv),
     model: env[spec.modelEnv] || spec.defaultModel,
