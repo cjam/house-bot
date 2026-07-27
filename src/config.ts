@@ -126,6 +126,10 @@ export type Config = {
   sessionFile: string;
   /** How long a chat can sit idle before its next message starts a fresh session. */
   sessionIdleMs: number;
+  /** Where scheduled prompts are persisted. */
+  scheduleFile: string;
+  /** Process timezone (from TZ), stamped on new schedules and used for display. */
+  timezone?: string;
 };
 
 export function loadConfig(env: Env = process.env): Config {
@@ -143,5 +147,7 @@ export function loadConfig(env: Env = process.env): Config {
     webSearch: env.WEB_SEARCH === "true",
     sessionFile: env.SESSION_FILE || "./data/sessions.json",
     sessionIdleMs: Number(env.SESSION_IDLE_MINUTES || 15) * 60_000,
+    scheduleFile: env.SCHEDULE_FILE || "./data/schedules.json",
+    timezone: env.TZ?.trim() || undefined,
   };
 }

@@ -90,6 +90,7 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     webSearch: false,
     sessionFile: "unused.json",
     sessionIdleMs: 15 * 60_000,
+    scheduleFile: "unused-schedules.json",
     ...overrides,
   };
 }

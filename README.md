@@ -119,9 +119,22 @@ cp .env.example .env   # fill in values first
 docker compose up -d --build
 ```
 
-One volume persists state across restarts:
+All persistent state lives in one directory, `/app/data`, kept across restarts by the `bot-data`
+named volume in `docker-compose.yml`:
 
-- `bot-data` → `/app/data` — the chat-id → conversation-history map (`data/sessions.json`).
+- `data/sessions.json` — the chat-id → conversation-history map.
+- `data/schedules.json` — scheduled prompts (see [Scheduled prompts](#scheduled-prompts)).
+
+**This mount is required for anything to survive a restart.** Without a volume on `/app/data`,
+recreating the container starts every chat fresh and drops every schedule. The bundled compose
+file already wires it up; if you run the image by hand instead, mount the volume yourself:
+
+```bash
+docker run -d --env-file .env -v bot-data:/app/data ghcr.io/cjam/house-bot:latest
+```
+
+(Swap `-v bot-data:/app/data` for a bind mount like `-v "$PWD/data:/app/data"` if you'd rather keep
+the files on the host where you can read them directly.)
 
 **Run only one instance.** Telegram's long-polling `getUpdates` call fails with HTTP 409 if two
 processes poll with the same bot token at once.
@@ -149,9 +162,31 @@ architectures. (The CI workflow builds the arm64 image under QEMU emulation.)
 - `/start` — health check; confirms the bot is online.
 - `/reset` — clears the current chat's saved session, so the next message starts a fresh
   conversation with the agent.
+- `/schedules` — list this chat's scheduled prompts with inline buttons to **run now**,
+  **pause/resume**, and **delete** each one.
 - Any other text message is sent to the agent as a new turn (continuing the chat's existing
   conversation), with a "typing…" indicator while it works. Long replies are split into chunks
   under Telegram's 4096-character message cap.
+
+## Scheduled prompts
+
+The bot can run a prompt on a recurring schedule and deliver the reply to a chat — e.g. a weekly
+"start planning next week's meals" nudge. There are two ways to manage schedules, and they operate
+on the same list:
+
+- **Just ask, in plain language.** The agent has tools to create, list, pause, and delete
+  schedules for the current chat: *"every Sunday at 5pm, start planning next week's meal plan"* →
+  it writes the cron expression and confirms. Times use your `TZ` (below) unless you name another.
+- **`/schedules` command.** A live panel listing this chat's schedules with inline buttons to run,
+  pause/resume, or delete each — handy when you'd rather tap than type.
+
+Each schedule stores a cron expression, the prompt, and a session mode: **fresh** (default) runs in
+isolation so a scheduled turn never pollutes an ongoing chat, while **continue** resumes the chat's
+current conversation. Schedules persist to `SCHEDULE_FILE` (default `data/schedules.json`) with the
+same atomic write as sessions. Timers run in-process (via [`croner`](https://github.com/hexagon/croner));
+if the bot is down when a schedule was due, the missed run fires once on the next startup. Cron
+times are interpreted in `TZ` (defaults to UTC), so set it to your local zone for "this week" and
+meal-plan dates to line up.
 
 ## Adding more MCP servers
 
@@ -184,6 +219,9 @@ startup log will tell you if a server failed to connect.
   messages — the next message after that starts a fresh conversation instead of resuming a stale
   one. (Migrating from the old Agent-SDK format is a one-time reset: those records are skipped on
   load, so existing chats simply start fresh.)
+- Scheduled prompts persist to `data/schedules.json` (same atomic write), each tagged with the
+  chat that owns it. The management tools and `/schedules` buttons only ever see and touch the
+  current chat's schedules, so one allowed chat can't manage another's.
 - The allowlist middleware silently drops updates from any chat not in `ALLOWED_CHAT_IDS` — no
   reply, no log noise from randos finding the bot.
 - The agent can only call the tools it's handed: your configured MCP tools, plus the optional web
