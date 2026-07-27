@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { Update } from "grammy/types";
 import { MockLanguageModelV4 } from "ai/test";
-import { createBot, chunkText, errorReplyFor } from "./index";
+import { createBot, chunkText, errorReplyFor, systemPromptWithDate } from "./index";
 import { createSessionStore } from "./sessions";
 import type { AskParams, AskResult } from "./agent";
 import type { Config } from "./config";
@@ -44,6 +44,20 @@ describe("chunkText", () => {
 
   test("returns a single empty chunk for empty text", () => {
     expect(chunkText("", 4000)).toEqual([""]);
+  });
+});
+
+describe("systemPromptWithDate", () => {
+  test("appends today's date to the base prompt", () => {
+    const out = systemPromptWithDate("BASE", new Date("2026-07-27T12:00:00Z"));
+    expect(out.startsWith("BASE")).toBe(true);
+    expect(out).toContain("Today's date is");
+    expect(out).toContain("2026");
+  });
+
+  test("names the weekday so the model can reason about 'this week'", () => {
+    const out = systemPromptWithDate("BASE", new Date("2026-07-27T18:00:00Z"));
+    expect(out).toMatch(/Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday/);
   });
 });
 
@@ -162,6 +176,7 @@ describe("createBot allowlist", () => {
     await bot.handleUpdate(textUpdate(1, 100, "hello"));
 
     expect(askCalls.length).toBe(1);
+    expect(askCalls[0]?.systemPrompt).toContain("Today's date is");
     expect(sentMessages.some((m: any) => m.method === "sendMessage")).toBe(true);
   });
 

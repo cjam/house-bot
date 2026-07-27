@@ -14,6 +14,23 @@ const SYSTEM_PROMPT =
 
 const REPLY_CHUNK_SIZE = 4000;
 
+/**
+ * Append today's date to the system prompt. The Claude Agent SDK used to supply
+ * this automatically; the plain AI SDK does not, so without it the model can't
+ * reason about relative dates ("this week", "today's meals"). Uses the process
+ * timezone — set the TZ env var to control it.
+ */
+export function systemPromptWithDate(base: string, now: Date = new Date()): string {
+  const date = new Intl.DateTimeFormat("en-US", {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    timeZoneName: "short",
+  }).format(now);
+  return `${base}\n\nToday's date is ${date}.`;
+}
+
 export function chunkText(text: string, size: number): string[] {
   if (text.length === 0) return [""];
   const chunks: string[] = [];
@@ -74,7 +91,7 @@ export function createBot(deps: BotDeps): Bot {
       result = await deps.ask({
         messages: deps.sessionStore.get(chatId) ?? [],
         prompt: ctx.message.text,
-        systemPrompt: deps.systemPrompt,
+        systemPrompt: systemPromptWithDate(deps.systemPrompt),
         model: deps.model,
         tools: deps.tools,
         maxSteps: deps.config.maxSteps,
