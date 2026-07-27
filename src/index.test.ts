@@ -178,7 +178,39 @@ describe("createBot allowlist", () => {
 
     expect(askCalls.length).toBe(1);
     expect(askCalls[0]?.systemPrompt).toContain("Today's date is");
-    expect(sentMessages.some((m: any) => m.method === "sendMessage")).toBe(true);
+    const reply = sentMessages.find((m: any) => m.method === "sendMessage") as any;
+    expect(reply).toBeDefined();
+    expect(reply.payload.parse_mode).toBe("MarkdownV2");
+  });
+
+  test("falls back to plain text when Telegram rejects the MarkdownV2 formatting", async () => {
+    const sentMessages: any[] = [];
+    const sessionStore = await tempSessionStore();
+
+    const bot = createBot({
+      config: baseConfig(),
+      sessionStore,
+      ask: async (): Promise<AskResult> => ({ messages: [], text: "**bold** reply" }),
+      systemPrompt: "be helpful",
+      model: MODEL,
+      tools: TOOLS,
+    });
+    bot.botInfo = BOT_INFO;
+    bot.api.config.use((_prev, method, payload: any) => {
+      // Simulate Telegram rejecting the formatted message.
+      if (method === "sendMessage" && payload.parse_mode) {
+        return Promise.reject(new Error("Bad Request: can't parse entities"));
+      }
+      sentMessages.push({ method, payload });
+      return Promise.resolve({ ok: true, result: true } as never);
+    });
+
+    await bot.handleUpdate(textUpdate(1, 100, "hello"));
+
+    const replies = sentMessages.filter((m) => m.method === "sendMessage");
+    expect(replies.length).toBe(1);
+    expect(replies[0].payload.parse_mode).toBeUndefined();
+    expect(replies[0].payload.text).toBe("**bold** reply");
   });
 
   test("catches a failing agent turn, replies with an error, and does not persist a session", async () => {

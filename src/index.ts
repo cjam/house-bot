@@ -1,5 +1,6 @@
 import { Bot } from "grammy";
 import { run, sequentialize } from "@grammyjs/runner";
+import telegramifyMarkdown from "telegramify-markdown";
 import type { LanguageModel, ToolSet } from "ai";
 import { loadConfig, type Config } from "./config";
 import { createSessionStore, type SessionStore } from "./sessions";
@@ -104,8 +105,20 @@ export function createBot(deps: BotDeps): Bot {
 
     await deps.sessionStore.set(chatId, result.messages);
 
+    // The model replies in GitHub-flavored Markdown, which Telegram won't render
+    // raw. Convert each chunk to Telegram's MarkdownV2 (with escaping) and send
+    // it formatted; if Telegram still rejects the entities (e.g. a chunk boundary
+    // split a span), fall back to the plain text so the reply always gets through.
     for (const chunk of chunkText(result.text, REPLY_CHUNK_SIZE)) {
-      await ctx.reply(chunk);
+      try {
+        await ctx.reply(telegramifyMarkdown(chunk, "escape"), { parse_mode: "MarkdownV2" });
+      } catch (err) {
+        console.error(
+          `MarkdownV2 reply rejected for chat ${chatId}, sending plain:`,
+          err instanceof Error ? err.message : err,
+        );
+        await ctx.reply(chunk);
+      }
     }
   });
 
