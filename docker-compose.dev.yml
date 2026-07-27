@@ -1,0 +1,48 @@
+# Dev overlay: stands up a local Mealie instance plus mealie-mcp
+# (https://github.com/cjam/mealie-mcp), the bridge server that talks to it.
+# house-bot itself runs locally with `bun run dev`, not in Docker; the
+# devcontainer's docker-in-docker feature shares this shell's network namespace
+# with containers it starts, so `localhost:8000` reaches mealie-mcp and
+# `localhost:9925` reaches the Mealie web UI without any extra networking setup.
+#
+#   bun run dev:up    # starts mealie + mealie-mcp in the background
+#   bun run dev       # runs house-bot locally with --watch
+#
+# The bridge reaches Mealie over the compose network at http://mealie:9000 and
+# authenticates with its OWN static Mealie token — it does NOT forward the MCP
+# client's Authorization header. So after first boot, log in to the local Mealie
+# (http://localhost:9925), create an API token under your profile, and put it in
+# .env as MEALIE_API_TOKEN (the bridge reads it via env_file below):
+#   MEALIE_API_TOKEN=<local Mealie API token>
+# house-bot then just points at the unauthenticated bridge; the Authorization
+# header in its MCP_SERVERS entry is ignored by mealie-mcp and can be omitted.
+
+services:
+  mealie:
+    image: ghcr.io/mealie-recipes/mealie:latest
+    restart: unless-stopped
+    ports:
+      - "9925:9000"
+    environment:
+      # SQLite is the default — no external database needed for dev.
+      ALLOW_SIGNUP: "false"
+      BASE_URL: http://localhost:9925
+    volumes:
+      - mealie-data:/app/data
+
+  mealie-mcp:
+    image: ghcr.io/cjam/mealie-mcp:main
+    restart: unless-stopped
+    env_file: .env
+    depends_on:
+      - mealie
+    ports:
+      - "8000:8000"
+    environment:
+      MCP_TRANSPORT: http
+      LOG_LEVEL: INFO
+      # Point the bridge at the local Mealie over the compose network.
+      MEALIE_BASE_URL: http://mealie:9000
+
+volumes:
+  mealie-data:

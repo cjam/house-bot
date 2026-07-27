@@ -1,17 +1,20 @@
 # house-bot
 
-A Telegram bot that fronts a Claude agent (via the Claude Agent SDK) with access to homelab MCP
-servers — Mealie recipes today, more later. Each Telegram chat gets its own resumable agent
-session; only tools that start with `mcp__`, plus `WebSearch`, are ever allowed to run — no shell,
-no filesystem access.
+A Telegram bot that fronts an LLM agent with access to homelab MCP servers — Mealie recipes today,
+more later. Provider-agnostic: it routes through [OpenRouter](https://openrouter.ai) by default
+(one key reaching Claude, GPT, Gemini, and open models), so switching models is a one-line config
+change. Each Telegram chat gets its own conversation that persists across messages; the only tools
+the agent can run are the MCP tools you configure (plus an optional web search) — no shell, no
+filesystem access.
 
 ## Stack
 
 Bun + TypeScript (ESM), [grammY](https://grammy.dev) with the
-[`@grammyjs/runner`](https://grammy.dev/plugins/runner) plugin for long polling, and
-[`@anthropic-ai/claude-agent-sdk`](https://www.npmjs.com/package/@anthropic-ai/claude-agent-sdk).
-The Agent SDK bundles its own native CLI binary, so there's no separate Claude Code install and no
-Node runtime required.
+[`@grammyjs/runner`](https://grammy.dev/plugins/runner) plugin for long polling, and the
+provider-agnostic [Vercel AI SDK](https://ai-sdk.dev) (`ai`) for the agentic tool loop. The model
+provider is a swappable package: [`@openrouter/ai-sdk-provider`](https://www.npmjs.com/package/@openrouter/ai-sdk-provider)
+by default, with a `resolveModel()` seam in [`src/provider.ts`](src/provider.ts) for dropping in
+direct `@ai-sdk/*` providers. MCP servers connect through [`@ai-sdk/mcp`](https://www.npmjs.com/package/@ai-sdk/mcp).
 
 ## Setup
 
@@ -49,15 +52,25 @@ In `.env` this must be on a single line:
 MCP_SERVERS={"mealie":{"type":"http","url":"http://mealie.local:9000/api/mcp","headers":{"Authorization":"Bearer YOUR_MEALIE_TOKEN"}}}
 ```
 
-Each value follows the Agent SDK's MCP server config shape: `type` is `"http"` or `"sse"`, plus a
-`url` and optional `headers`. Put the full `Authorization` header (token included) directly in the
-JSON. For Mealie, create the token under your Mealie user profile → API Tokens. The bot connects
-in-process, so LAN-only URLs are fine — no need to expose anything to the internet.
+Each value is an MCP server config: `type` is `"http"` or `"sse"`, plus a `url` and optional
+`headers` (a local `stdio` process is also supported). Put the full `Authorization` header (token
+included) directly in the JSON. For Mealie, create the token under your Mealie user profile → API
+Tokens. LAN-only URLs are fine — no need to expose anything to the internet.
 
-### 4. Anthropic API key
+### 4. Provider API key and model
 
-Set `ANTHROPIC_API_KEY`. The Agent SDK reads this itself; the bot only asserts it's present at
-startup.
+`PROVIDER` picks the active provider (default `openrouter`), and each provider reads its own
+namespaced vars — `<PROVIDER>_API_KEY` and `<PROVIDER>_MODEL` — so their settings never collide and
+each can grow independent extras. Only the active provider's block is read; the rest can stay blank.
+
+For the default OpenRouter provider, set `OPENROUTER_API_KEY` and optionally `OPENROUTER_MODEL` (a
+slug, default `google/gemini-2.5-flash` — a cost-efficient pick with reliable tool calling; swap
+freely, e.g. `anthropic/claude-sonnet-4.5` for harder tasks). To use a direct provider instead, set
+`PROVIDER` and its own `*_API_KEY`/`*_MODEL` (and enable its branch in
+[`src/provider.ts`](src/provider.ts)) — direct models use the provider's native id, not a slug.
+
+Note: the agentic tool loop runs on the model you choose — non-Claude models work, but tool-calling
+quality varies by model.
 
 Copy `.env.example` to `.env` and fill in the values above.
 
@@ -72,21 +85,32 @@ bun start         # or `bun run dev` for --watch
 
 ### Dev container
 
-`.devcontainer/` defines a ready-to-go environment (Bun matching the production image, plus git and
-the GitHub CLI). Open the repo in VS Code and "Reopen in Container", or use the devcontainer CLI —
-`bun install` runs automatically on create. `bun test` and `bun run typecheck` need no secrets; to
-run the bot, copy `.env.example` to `.env` (Bun auto-loads it) and fill in the values.
+`.devcontainer/` defines a ready-to-go environment (Bun, git, the GitHub CLI, and a nested Docker
+daemon via docker-in-docker). Open the repo in VS Code and "Reopen in Container", or use the
+devcontainer CLI — `bun install` runs automatically on create. `bun test` and `bun run typecheck`
+need no secrets; to run the bot, copy `.env.example` to `.env` (Bun auto-loads it) and fill in the
+values.
 
-On boot the bot connects to every configured MCP server and logs the resolved `mcp__*` tool list
-(or a clear error if a server is unreachable — the bot still starts, just without that server's
-tools).
+house-bot itself runs locally with Bun, not in Docker — only mealie-mcp (the Mealie MCP bridge)
+runs in a container:
 
-Each server is fronted by an in-process proxy that re-exposes its tools under names short enough to
-satisfy the Anthropic Messages API's 64-character tool-name limit. Tools whose namespaced name
-(`mcp__<server>__<tool>`) would exceed 64 chars — common for servers that auto-name tools from long
-route/operation IDs, like Mealie — are truncated and suffixed with a short hash; the startup log
-notes how many were shortened. Without this, a single over-long name makes the API reject the whole
-request, so the model ends up with *no* MCP tools.
+```bash
+bun run dev:up   # starts mealie-mcp in the background (docker-compose.dev.yml)
+bun run dev      # runs house-bot locally with --watch
+```
+
+Because the devcontainer's Docker daemon shares this shell's network namespace, `MCP_SERVERS` can
+just point at `http://localhost:8000/mcp` for mealie-mcp — no compose-network hostname needed.
+
+On boot the bot connects to every configured MCP server and logs the resolved tool list (or a clear
+error if a server is unreachable — the bot still starts, just without that server's tools).
+
+Each server's tools are namespaced per server (`<server>_<tool>`) and merged into one tool set.
+Names that would exceed the providers' 64-character function-name limit — common for servers that
+auto-name tools from long route/operation IDs, like Mealie — are truncated and suffixed with a
+short deterministic hash (unique across servers); the startup log notes how many were shortened.
+Without this, a single over-long name makes the API reject the whole request, so the model ends up
+with *no* MCP tools.
 
 ## Docker
 
@@ -95,17 +119,12 @@ cp .env.example .env   # fill in values first
 docker compose up -d --build
 ```
 
-Two volumes persist state across restarts:
+One volume persists state across restarts:
 
-- `claude-sessions` → `/root/.claude` — the Agent SDK's own session transcripts.
-- `bot-data` → `/app/data` — the chat-id → session-id map (`data/sessions.json`).
+- `bot-data` → `/app/data` — the chat-id → conversation-history map (`data/sessions.json`).
 
 **Run only one instance.** Telegram's long-polling `getUpdates` call fails with HTTP 409 if two
 processes poll with the same bot token at once.
-
-The container runs as `root` so `$HOME` (`/root`) is deterministic for the session volume. If you
-harden the image to run as a non-root `bun` user, repoint the `claude-sessions` volume to
-`/home/bun/.claude` instead.
 
 ### Prebuilt image (GitHub Container Registry)
 
@@ -122,19 +141,17 @@ Tags: `latest` (default branch), the branch name, `sha-<commit>`, and semver tag
 `1.2`) when you push a `v*` git tag. To run the prebuilt image with compose, swap `build: .` for
 `image: ghcr.io/cjam/house-bot:latest` in `docker-compose.yml`.
 
-If you'd rather build locally on an ARM host, build the image *on* the target architecture — the
-Agent SDK's native binary is a platform-specific `optionalDependency`, and `bun install` needs to
-run on `linux-arm64` for that variant to resolve. (The CI workflow handles this by building the
-arm64 image under QEMU emulation.)
+The image is pure JS/TS with no platform-specific native binaries, so it builds cleanly for both
+architectures. (The CI workflow builds the arm64 image under QEMU emulation.)
 
 ## Usage
 
 - `/start` — health check; confirms the bot is online.
 - `/reset` — clears the current chat's saved session, so the next message starts a fresh
   conversation with the agent.
-- Any other text message is sent to the agent as a new turn (or a continuation of the chat's
-  existing session), with a "typing…" indicator while it works. Long replies are split into
-  chunks under Telegram's 4096-character message cap.
+- Any other text message is sent to the agent as a new turn (continuing the chat's existing
+  conversation), with a "typing…" indicator while it works. Long replies are split into chunks
+  under Telegram's 4096-character message cap.
 
 ## Adding more MCP servers
 
@@ -161,14 +178,17 @@ startup log will tell you if a server failed to connect.
 
 ## Persistence & security notes
 
-- Each Telegram chat maps to one resumable Agent SDK session (`chat_id -> session_id`), persisted
-  to `data/sessions.json` with an atomic write (write to `.tmp`, then rename) so a crash mid-write
-  never corrupts the file.
+- Each Telegram chat maps to one conversation history (`chat_id -> messages`), persisted to
+  `data/sessions.json` with an atomic write (write to `.tmp`, then rename) so a crash mid-write
+  never corrupts the file. A chat's history expires after `SESSION_IDLE_MINUTES` (default 15) of no
+  messages — the next message after that starts a fresh conversation instead of resuming a stale
+  one. (Migrating from the old Agent-SDK format is a one-time reset: those records are skipped on
+  load, so existing chats simply start fresh.)
 - The allowlist middleware silently drops updates from any chat not in `ALLOWED_CHAT_IDS` — no
   reply, no log noise from randos finding the bot.
-- The `canUseTool` permission gate only allows tool names starting with `mcp__`, plus `WebSearch`.
-  Everything else — shell, filesystem, arbitrary tools — is denied. This is the only line of
-  defense between "Telegram message" and "agent runs a command on your homelab," so don't loosen
-  it without thinking hard about what's on the other end of that MCP server.
+- The agent can only call the tools it's handed: your configured MCP tools, plus the optional web
+  search when `WEB_SEARCH=true`. There is no shell/filesystem tool in the set at all — the tool set
+  *is* the allowlist. Still, that MCP server can do whatever its API allows, so think hard about
+  what's on the other end before pointing the bot at it.
 - `.env` is gitignored; only `.env.example` (with empty values) is committed. This repo is public
   — never commit real tokens.

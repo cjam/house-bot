@@ -1,11 +1,11 @@
 import { Bot } from "grammy";
 import { run, sequentialize } from "@grammyjs/runner";
-import type { McpServerConfig } from "@anthropic-ai/claude-agent-sdk";
+import type { LanguageModel, ToolSet } from "ai";
 import { loadConfig, type Config } from "./config";
 import { createSessionStore, type SessionStore } from "./sessions";
 import { ask as realAsk, type AskParams, type AskResult } from "./agent";
-import { createMcpProxies } from "./mcp-proxy";
-import { canUseTool, ALLOWED_BUILTIN_TOOLS } from "./tools";
+import { createMcpTools } from "./mcp";
+import { resolveProvider } from "./provider";
 
 const SYSTEM_PROMPT =
   "You are a concise, practical household assistant. Help with meal planning, recipes, " +
@@ -37,13 +37,10 @@ export type BotDeps = {
   sessionStore: SessionStore;
   ask: (params: AskParams) => Promise<AskResult>;
   systemPrompt: string;
-  /**
-   * Produces the MCP servers for a single agent turn. Each turn needs its own
-   * proxy instances (the agent query connects its own transport to them), so
-   * this is a factory rather than a static record. Defaults to the raw servers
-   * from config when omitted (used in tests).
-   */
-  mcpServers?: () => Record<string, McpServerConfig>;
+  /** The resolved model every turn runs on. */
+  model: LanguageModel;
+  /** MCP tools (plus any provider web-search tool), merged into one set. */
+  tools: ToolSet;
 };
 
 export function createBot(deps: BotDeps): Bot {
@@ -75,13 +72,12 @@ export function createBot(deps: BotDeps): Bot {
     let result: AskResult;
     try {
       result = await deps.ask({
+        messages: deps.sessionStore.get(chatId) ?? [],
         prompt: ctx.message.text,
-        resume: deps.sessionStore.get(chatId),
         systemPrompt: deps.systemPrompt,
-        model: deps.config.model,
-        mcpServers: deps.mcpServers ? deps.mcpServers() : deps.config.mcpServers,
-        canUseTool,
-        builtinTools: [...ALLOWED_BUILTIN_TOOLS],
+        model: deps.model,
+        tools: deps.tools,
+        maxSteps: deps.config.maxSteps,
       });
     } catch (err) {
       console.error(
@@ -92,7 +88,7 @@ export function createBot(deps: BotDeps): Bot {
       return;
     }
 
-    await deps.sessionStore.set(chatId, result.sessionId);
+    await deps.sessionStore.set(chatId, result.messages);
 
     for (const chunk of chunkText(result.text, REPLY_CHUNK_SIZE)) {
       await ctx.reply(chunk);
@@ -114,21 +110,32 @@ export function createBot(deps: BotDeps): Bot {
 async function main() {
   const config = loadConfig();
 
-  const sessionStore = createSessionStore(config.sessionFile);
+  const sessionStore = createSessionStore(config.sessionFile, config.sessionIdleMs);
   await sessionStore.load();
 
+  const { model, webSearchTool } = resolveProvider(config);
+
   console.log("Connecting MCP servers...");
-  const proxies = await createMcpProxies(config.mcpServers, (line) => console.log(line));
-  for (const line of proxies.describe()) {
+  const mcp = await createMcpTools(config.mcpServers, (line) => console.log(line));
+  for (const line of mcp.describe()) {
     console.log(line);
   }
+
+  const tools: ToolSet = {
+    ...mcp.tools,
+    ...(webSearchTool ? { web_search: webSearchTool } : {}),
+  };
+  console.log(
+    `Model: ${config.provider}/${config.model}; web search ${config.webSearch ? "on" : "off"}.`,
+  );
 
   const bot = createBot({
     config,
     sessionStore,
     ask: realAsk,
     systemPrompt: SYSTEM_PROMPT,
-    mcpServers: () => proxies.buildServers(),
+    model,
+    tools,
   });
 
   const runner = run(bot);
@@ -136,7 +143,7 @@ async function main() {
 
   const stop = () => {
     console.log("Shutting down...");
-    void proxies.close();
+    void mcp.close();
     void runner.stop();
   };
   process.once("SIGINT", stop);

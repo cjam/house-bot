@@ -1,13 +1,15 @@
 {
   "name": "house-bot",
 
-  // Same runtime as production (Dockerfile uses oven/bun:1-slim). The non-slim
-  // tag adds the extra OS tooling that's handy in a dev shell.
-  "image": "oven/bun:1",
+  // Generic Debian base (bookworm, not oven/bun:1's trixie) — Bun comes from
+  // a feature below instead of the base image. Trixie dropped the `moby-*`
+  // apt packages docker-in-docker needs, so bookworm lets us use real moby
+  // instead of falling back to installing Docker CE from Docker's own repo.
+  "image": "mcr.microsoft.com/devcontainers/base:bookworm",
 
   "features": {
-    // A sane non-root user (`bun` already exists in the image, uid 1000) with
-    // sudo, plus curl/ca-certificates/etc.
+    // A sane non-root user (creates `bun`, uid 1000, since the base image's
+    // default user is `vscode`) with sudo, plus curl/ca-certificates/etc.
     "ghcr.io/devcontainers/features/common-utils:2": {
       "username": "bun",
       "installZsh": false,
@@ -15,8 +17,23 @@
     },
     "ghcr.io/devcontainers/features/git:1": {},
     // Handy for PRs/issues while working on the repo; not required to build.
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers-extra/features/bun:1": {
+      "version": "latest"
+    },
+    // Claude Code CLI for working on this repo from inside the container.
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {},
+    // Runs a nested Docker daemon inside this container, so `docker compose
+    // up` here puts containers on the SAME network namespace as this shell —
+    // `localhost:<published-port>` just works, no docker-outside-of-docker
+    // sibling-container network juggling. Needs its own dockerd, hence
+    // "privileged" below (independent of the moby/Docker CE package choice,
+    // which defaults to moby already).
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
   },
+
+  // docker-in-docker needs a privileged container to run its nested daemon.
+  "privileged": true,
 
   "customizations": {
     "vscode": {
@@ -38,8 +55,7 @@
     }
   },
 
-  // Install dependencies once the container is up. Bun reads the lockfile, and
-  // pulls the correct platform binary for @anthropic-ai/claude-agent-sdk.
+  // Install dependencies once the container is up.
   "postCreateCommand": "bun install",
 
   "remoteUser": "bun",

@@ -1,9 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type { Update } from "grammy/types";
+import { MockLanguageModelV4 } from "ai/test";
 import { createBot, chunkText, errorReplyFor } from "./index";
 import { createSessionStore } from "./sessions";
 import type { AskParams, AskResult } from "./agent";
 import type { Config } from "./config";
+
+// createBot never invokes the model directly (ask is stubbed in these tests),
+// so a bare mock model and empty tool set satisfy the types.
+const MODEL = new MockLanguageModelV4();
+const TOOLS = {};
 
 describe("errorReplyFor", () => {
   test("gives a rate-limit-specific message for 429 / rate limit errors", () => {
@@ -62,8 +68,13 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     telegramToken: "test-token",
     allowedChatIds: new Set([100]),
     mcpServers: {},
-    model: "claude-opus-4-8",
+    provider: "openrouter",
+    apiKey: "sk-test",
+    model: "anthropic/claude-sonnet-4.5",
+    maxSteps: 12,
+    webSearch: false,
     sessionFile: "unused.json",
+    sessionIdleMs: 15 * 60_000,
     ...overrides,
   };
 }
@@ -92,7 +103,7 @@ async function tempSessionStore() {
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const dir = mkdtempSync(join(tmpdir(), "house-bot-index-"));
-  const store = createSessionStore(join(dir, "sessions.json"));
+  const store = createSessionStore(join(dir, "sessions.json"), 15 * 60_000);
   await store.load();
   return store;
 }
@@ -108,9 +119,11 @@ describe("createBot allowlist", () => {
       sessionStore,
       ask: async (params: AskParams): Promise<AskResult> => {
         askCalls.push(params);
-        return { sessionId: "s1", text: "reply" };
+        return { messages: [], text: "reply" };
       },
       systemPrompt: "be helpful",
+      model: MODEL,
+      tools: TOOLS,
     });
     bot.botInfo = BOT_INFO;
     bot.api.config.use((_prev, method, payload) => {
@@ -134,9 +147,11 @@ describe("createBot allowlist", () => {
       sessionStore,
       ask: async (params: AskParams): Promise<AskResult> => {
         askCalls.push(params);
-        return { sessionId: "s1", text: "reply" };
+        return { messages: [], text: "reply" };
       },
       systemPrompt: "be helpful",
+      model: MODEL,
+      tools: TOOLS,
     });
     bot.botInfo = BOT_INFO;
     bot.api.config.use((_prev, method, payload) => {
@@ -161,6 +176,8 @@ describe("createBot allowlist", () => {
         throw new Error("Request rejected (429) rate limit exceeded");
       },
       systemPrompt: "be helpful",
+      model: MODEL,
+      tools: TOOLS,
     });
     bot.botInfo = BOT_INFO;
     bot.api.config.use((_prev, method, payload) => {
@@ -182,13 +199,15 @@ describe("createBot allowlist", () => {
 describe("createBot /reset", () => {
   test("clears the session for the current chat", async () => {
     const sessionStore = await tempSessionStore();
-    await sessionStore.set(100, "old-session-id");
+    await sessionStore.set(100, [{ role: "user", content: "hi" }]);
 
     const bot = createBot({
       config: baseConfig(),
       sessionStore,
-      ask: async (): Promise<AskResult> => ({ sessionId: "s1", text: "reply" }),
+      ask: async (): Promise<AskResult> => ({ messages: [], text: "reply" }),
       systemPrompt: "be helpful",
+      model: MODEL,
+      tools: TOOLS,
     });
     bot.botInfo = BOT_INFO;
     bot.api.config.use((_prev, _method, _payload) => {

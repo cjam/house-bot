@@ -1,94 +1,72 @@
-import { describe, expect, test, mock } from "bun:test";
-import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-import { extractSessionId, appendAssistantText } from "./agent";
+import { describe, expect, test } from "bun:test";
+import { MockLanguageModelV4 } from "ai/test";
+import type { ModelMessage } from "ai";
+import { ask } from "./agent";
 
-function assistantMsg(content: Array<{ type: string; text?: string }>): SDKMessage {
-  return {
-    type: "assistant",
-    message: { content },
-    parent_tool_use_id: null,
-    uuid: "u1",
-    session_id: "s1",
-  } as unknown as SDKMessage;
+const USAGE = {
+  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+  outputTokens: { total: 1, text: 1, reasoning: 0 },
+};
+
+/** A model that always replies with the given text and no tool calls. */
+function textModel(text: string) {
+  return new MockLanguageModelV4({
+    doGenerate: async () => ({
+      content: text ? [{ type: "text" as const, text }] : [],
+      finishReason: { unified: "stop" as const, raw: "stop" },
+      usage: USAGE,
+      warnings: [],
+    }),
+  });
 }
-
-function initMsg(sessionId: string): SDKMessage {
-  return {
-    type: "system",
-    subtype: "init",
-    session_id: sessionId,
-  } as unknown as SDKMessage;
-}
-
-describe("extractSessionId", () => {
-  test("returns session_id from a system/init message", () => {
-    expect(extractSessionId(initMsg("abc-123"))).toBe("abc-123");
-  });
-
-  test("returns undefined for non-init messages", () => {
-    expect(extractSessionId(assistantMsg([{ type: "text", text: "hi" }]))).toBeUndefined();
-  });
-});
-
-describe("appendAssistantText", () => {
-  test("concatenates text blocks from an assistant message", () => {
-    const msg = assistantMsg([
-      { type: "text", text: "hello " },
-      { type: "text", text: "world" },
-    ]);
-    expect(appendAssistantText("", msg)).toBe("hello world");
-  });
-
-  test("ignores tool_use blocks", () => {
-    const msg = assistantMsg([
-      { type: "tool_use", text: undefined },
-      { type: "text", text: "answer" },
-    ]);
-    expect(appendAssistantText("", msg)).toBe("answer");
-  });
-
-  test("appends to existing accumulator", () => {
-    const msg = assistantMsg([{ type: "text", text: " more" }]);
-    expect(appendAssistantText("start", msg)).toBe("start more");
-  });
-
-  test("non-assistant messages leave the accumulator unchanged", () => {
-    expect(appendAssistantText("unchanged", initMsg("s1"))).toBe("unchanged");
-  });
-});
 
 describe("ask", () => {
-  test("resumes with the saved session id and persists the returned one", async () => {
-    let capturedOptions: Record<string, unknown> | undefined;
-
-    mock.module("@anthropic-ai/claude-agent-sdk", () => ({
-      query: (params: { prompt: string; options?: Record<string, unknown> }) => {
-        capturedOptions = params.options;
-        return (async function* () {
-          yield { type: "system", subtype: "init", session_id: "s1" };
-          yield {
-            type: "assistant",
-            message: { content: [{ type: "text", text: "hi" }] },
-          };
-        })();
-      },
-    }));
-
-    const { ask } = await import("./agent");
-
+  test("appends the user prompt and returns the reply text", async () => {
     const result = await ask({
+      messages: [],
       prompt: "hello",
-      resume: "previous-session",
       systemPrompt: "be helpful",
-      model: "claude-opus-4-8",
-      mcpServers: {},
-      canUseTool: async () => ({ behavior: "deny", message: "no" }),
-      builtinTools: ["WebSearch"],
+      model: textModel("hi there"),
+      tools: {},
+      maxSteps: 5,
     });
 
-    expect(capturedOptions?.resume).toBe("previous-session");
-    expect(capturedOptions?.tools).toEqual(["WebSearch"]);
-    expect(result.sessionId).toBe("s1");
-    expect(result.text).toBe("hi");
+    expect(result.text).toBe("hi there");
+    expect(result.messages[0]).toEqual({ role: "user", content: "hello" });
+    expect(result.messages.at(-1)?.role).toBe("assistant");
+  });
+
+  test("threads prior history through, preserving order", async () => {
+    const prior: ModelMessage[] = [
+      { role: "user", content: "first" },
+      { role: "assistant", content: "reply" },
+    ];
+
+    const result = await ask({
+      messages: prior,
+      prompt: "second",
+      systemPrompt: "be helpful",
+      model: textModel("ok"),
+      tools: {},
+      maxSteps: 5,
+    });
+
+    expect(result.messages[0]).toEqual({ role: "user", content: "first" });
+    expect(result.messages[1]).toEqual({ role: "assistant", content: "reply" });
+    expect(result.messages[2]).toEqual({ role: "user", content: "second" });
+    expect(result.messages.at(-1)?.role).toBe("assistant");
+  });
+
+  test("falls back to a placeholder when the model returns no text", async () => {
+    const result = await ask({
+      messages: [],
+      prompt: "hi",
+      systemPrompt: "x",
+      model: textModel(""),
+      tools: {},
+      maxSteps: 5,
+    });
+
+    expect(result.text).toBe("(no response)");
   });
 });

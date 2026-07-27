@@ -5,15 +5,19 @@
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
+    "dev:up": "docker compose -f docker-compose.dev.yml up -d mealie-mcp",
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "test:watch": "bun test --watch"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "latest",
+    "@ai-sdk/mcp": "^2",
     "@grammyjs/runner": "latest",
-    "grammy": "latest"
+    "@openrouter/ai-sdk-provider": "^3",
+    "ai": "^7",
+    "grammy": "latest",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "latest",

@@ -1,64 +1,42 @@
-import { query, type CanUseTool, type McpServerConfig, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
-
-export function extractSessionId(msg: SDKMessage): string | undefined {
-  if (msg.type === "system" && msg.subtype === "init") {
-    return msg.session_id;
-  }
-  return undefined;
-}
-
-export function appendAssistantText(acc: string, msg: SDKMessage): string {
-  if (msg.type !== "assistant") return acc;
-  const content = msg.message.content as Array<{ type: string; text?: string }>;
-  const text = content
-    .filter((block) => block.type === "text" && typeof block.text === "string")
-    .map((block) => block.text)
-    .join("");
-  return acc + text;
-}
+import { generateText, stepCountIs, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
 
 export type AskParams = {
+  /** Prior conversation for this chat (empty for a fresh session). */
+  messages: ModelMessage[];
+  /** The new user message to answer. */
   prompt: string;
-  resume?: string;
   systemPrompt: string;
-  model: string;
-  mcpServers: Record<string, McpServerConfig>;
-  canUseTool: CanUseTool;
-  /**
-   * Built-in (non-MCP) tools to load into the prompt. Keep this to the tools
-   * the permission gate actually allows — loading the full Claude Code tool set
-   * wastes input tokens on schemas we always deny.
-   */
-  builtinTools: string[];
+  model: LanguageModel;
+  tools: ToolSet;
+  /** Max steps in the agentic tool loop before the run stops. */
+  maxSteps: number;
 };
 
 export type AskResult = {
-  sessionId: string;
+  /** Full updated history to persist (prior + this user turn + the model's reply). */
+  messages: ModelMessage[];
+  /** The assistant's text reply. */
   text: string;
 };
 
+/**
+ * One agentic turn on the Vercel AI SDK. The SDK is stateless, so we thread the
+ * conversation through explicitly: append the user message, run the tool loop,
+ * and return the full message array for the caller to persist.
+ */
 export async function ask(params: AskParams): Promise<AskResult> {
-  let sessionId: string | undefined;
-  let text = "";
+  const sent: ModelMessage[] = [...params.messages, { role: "user", content: params.prompt }];
 
-  for await (const msg of query({
-    prompt: params.prompt,
-    options: {
-      resume: params.resume,
-      systemPrompt: params.systemPrompt,
-      model: params.model,
-      mcpServers: params.mcpServers,
-      canUseTool: params.canUseTool,
-      tools: params.builtinTools,
-    },
-  })) {
-    sessionId = extractSessionId(msg) ?? sessionId;
-    text = appendAssistantText(text, msg);
-  }
+  const result = await generateText({
+    model: params.model,
+    system: params.systemPrompt,
+    messages: sent,
+    tools: params.tools,
+    stopWhen: stepCountIs(params.maxSteps),
+  });
 
-  if (!sessionId) {
-    throw new Error("Agent SDK did not return a session id");
-  }
-
-  return { sessionId, text: text || "(no response)" };
+  return {
+    messages: [...sent, ...result.response.messages],
+    text: result.text || "(no response)",
+  };
 }
