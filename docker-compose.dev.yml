@@ -8,14 +8,14 @@
 #   bun run dev:up    # starts mealie + mealie-mcp in the background
 #   bun run dev       # runs house-bot locally with --watch
 #
-# The bridge reaches Mealie over the compose network at http://mealie:9000 and
-# authenticates with its OWN static Mealie token — it does NOT forward the MCP
-# client's Authorization header. So after first boot, log in to the local Mealie
-# (http://localhost:9925), create an API token under your profile, and put it in
-# .env as MEALIE_API_TOKEN (the bridge reads it via env_file below):
+# The bridge reaches Mealie over the compose network at http://mealie:9000. It
+# forwards the caller's Authorization header (house-bot's MCP_SERVERS entry) on
+# to Mealie per request, falling back to its own MEALIE_API_TOKEN when no header
+# is sent. So after first boot, log in to the local Mealie (http://localhost:9925),
+# create an API token under your profile, and either put it in house-bot's
+# MCP_SERVERS header, or set MEALIE_API_TOKEN in .env (read via env_file below) as
+# a static fallback:
 #   MEALIE_API_TOKEN=<local Mealie API token>
-# house-bot then just points at the unauthenticated bridge; the Authorization
-# header in its MCP_SERVERS entry is ignored by mealie-mcp and can be omitted.
 
 services:
   mealie:

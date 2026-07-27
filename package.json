@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
-    "dev:up": "docker compose -f docker-compose.dev.yml up -d mealie-mcp",
+    "dev:up": "docker compose -f docker-compose.dev.yml up -d",
     "start": "bun src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
