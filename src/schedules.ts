@@ -10,16 +10,18 @@ import { randomUUID } from "node:crypto";
  */
 export type SessionMode = "fresh" | "continue";
 
-export type Schedule = {
+/** A recurring schedule repeats on a cron expression; a one-off fires once. */
+export type ScheduleKind = "recurring" | "once";
+
+/** Fields common to both kinds of schedule. */
+type ScheduleCommon = {
   id: string;
   /** The Telegram chat this schedule fires into. */
   chatId: number;
-  /** Standard 5-field cron expression (minute hour day month weekday). */
-  cron: string;
   /** The prompt run as if the user had sent it. */
   prompt: string;
   enabled: boolean;
-  /** IANA timezone for the cron expression; falls back to the process TZ. */
+  /** IANA timezone for the trigger; falls back to the process TZ. */
   timezone?: string;
   sessionMode: SessionMode;
   createdAt: number;
@@ -27,15 +29,28 @@ export type Schedule = {
   lastRunAt: number | null;
 };
 
+/**
+ * A schedule is either recurring (a cron expression) or a one-off (a fixed
+ * datetime). A one-off is deleted automatically once it fires. The two carry
+ * different trigger fields, so the kind discriminant tells them apart.
+ */
+export type Schedule =
+  | (ScheduleCommon & { kind: "recurring"; cron: string })
+  | (ScheduleCommon & { kind: "once"; runAt: string });
+
 /** The fields a caller supplies when adding a schedule; the rest are derived. */
 export type ScheduleInput = {
   chatId: number;
-  cron: string;
   prompt: string;
   enabled?: boolean;
   timezone?: string;
   sessionMode?: SessionMode;
-};
+} & ({ kind: "recurring"; cron: string } | { kind: "once"; runAt: string });
+
+/** The mutable fields a caller may patch — never the kind or its trigger. */
+export type ScheduleUpdate = Partial<
+  Pick<Schedule, "enabled" | "prompt" | "sessionMode" | "timezone" | "lastRunAt">
+>;
 
 export type ScheduleStore = {
   load(): Promise<void>;
@@ -44,9 +59,17 @@ export type ScheduleStore = {
   get(id: string): Schedule | undefined;
   add(input: ScheduleInput): Promise<Schedule>;
   /** Applies a partial patch and persists; returns the updated record or undefined. */
-  update(id: string, patch: Partial<Omit<Schedule, "id">>): Promise<Schedule | undefined>;
+  update(id: string, patch: ScheduleUpdate): Promise<Schedule | undefined>;
   remove(id: string): Promise<boolean>;
 };
+
+/** True if a loaded record has the shape of one of the two schedule kinds. */
+function isSchedule(value: unknown): value is Schedule {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  if (v.kind === "once") return typeof v.runAt === "string";
+  return typeof v.cron === "string"; // "recurring", or a legacy record (see load()).
+}
 
 /**
  * Persists id -> Schedule to a JSON file, following the same atomic-write,
@@ -76,13 +99,14 @@ export function createScheduleStore(filePath: string): ScheduleStore {
       }
       const data = JSON.parse(raw) as Record<string, unknown>;
       for (const [id, value] of Object.entries(data)) {
-        if (
-          typeof value === "object" &&
-          value !== null &&
-          typeof (value as Schedule).cron === "string"
-        ) {
-          schedules.set(id, value as Schedule);
+        if (typeof value !== "object" || value === null) continue;
+        const record = value as Record<string, unknown>;
+        // Records written before one-offs existed have a `cron` but no `kind`;
+        // treat them as recurring so they keep working across the upgrade.
+        if (record.kind === undefined && typeof record.cron === "string") {
+          record.kind = "recurring";
         }
+        if (isSchedule(record)) schedules.set(id, record as Schedule);
       }
     },
 
@@ -96,10 +120,9 @@ export function createScheduleStore(filePath: string): ScheduleStore {
     },
 
     async add(input) {
-      const schedule: Schedule = {
+      const common: ScheduleCommon = {
         id: randomUUID().slice(0, 8),
         chatId: input.chatId,
-        cron: input.cron,
         prompt: input.prompt,
         enabled: input.enabled ?? true,
         timezone: input.timezone,
@@ -107,6 +130,10 @@ export function createScheduleStore(filePath: string): ScheduleStore {
         createdAt: Date.now(),
         lastRunAt: null,
       };
+      const schedule: Schedule =
+        input.kind === "once"
+          ? { ...common, kind: "once", runAt: input.runAt }
+          : { ...common, kind: "recurring", cron: input.cron };
       schedules.set(schedule.id, schedule);
       await persist();
       return schedule;
@@ -115,7 +142,7 @@ export function createScheduleStore(filePath: string): ScheduleStore {
     async update(id, patch) {
       const current = schedules.get(id);
       if (!current) return undefined;
-      const updated = { ...current, ...patch, id };
+      const updated = { ...current, ...patch } as Schedule;
       schedules.set(id, updated);
       await persist();
       return updated;

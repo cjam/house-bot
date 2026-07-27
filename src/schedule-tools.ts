@@ -1,13 +1,14 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import type { ScheduleStore, Schedule } from "./schedules";
-import { type Scheduler, validateCron, nextRun } from "./scheduler";
+import { type Scheduler, validateCron, validateOnce, nextRun } from "./scheduler";
 
 /** Compact view of a schedule for the model, including its next fire time. */
 function summarize(schedule: Schedule) {
   return {
     id: schedule.id,
-    cron: schedule.cron,
+    kind: schedule.kind,
+    ...(schedule.kind === "once" ? { runAt: schedule.runAt } : { cron: schedule.cron }),
     prompt: schedule.prompt,
     enabled: schedule.enabled,
     sessionMode: schedule.sessionMode,
@@ -52,13 +53,28 @@ export function createScheduleTools(deps: ScheduleToolsDeps): ToolSet {
 
     create_schedule: tool({
       description:
-        "Create a scheduled prompt for this chat. The prompt runs on the cron schedule " +
-        "as if the user had sent it, and the reply is delivered to this chat. Use this " +
-        'for recurring tasks like "every Sunday at 5pm, start planning next week\'s meals".',
+        "Create a scheduled prompt for this chat. The prompt runs as if the user had sent " +
+        "it, and the reply is delivered to this chat. Use kind='recurring' with a cron " +
+        'expression for repeating tasks ("every Sunday at 5pm, plan next week\'s meals"), ' +
+        "or kind='once' with a datetime for a one-time reminder that auto-deletes after it fires.",
       inputSchema: z.object({
+        kind: z
+          .enum(["recurring", "once"])
+          .describe("'recurring' repeats on a cron schedule; 'once' fires a single time then deletes itself."),
         cron: z
           .string()
-          .describe("Standard 5-field cron expression: minute hour day month weekday. e.g. '0 17 * * 0' = Sundays 17:00."),
+          .optional()
+          .describe(
+            "Required when kind='recurring'. 5-field cron expression: minute hour day month " +
+              "weekday. e.g. '0 17 * * 0' = Sundays 17:00.",
+          ),
+        runAt: z
+          .string()
+          .optional()
+          .describe(
+            "Required when kind='once'. Local ISO-8601 datetime, e.g. '2026-07-28T17:00'. " +
+              "Interpreted in the schedule's timezone; must be in the future.",
+          ),
         prompt: z.string().describe("The instruction to run when the schedule fires."),
         sessionMode: z
           .enum(["fresh", "continue"])
@@ -70,13 +86,22 @@ export function createScheduleTools(deps: ScheduleToolsDeps): ToolSet {
         timezone: z
           .string()
           .optional()
-          .describe("IANA timezone for the cron expression, e.g. 'America/Vancouver'. Defaults to the bot's timezone."),
+          .describe("IANA timezone for the trigger, e.g. 'America/Vancouver'. Defaults to the bot's timezone."),
       }),
-      execute: async ({ cron, prompt, sessionMode, timezone }) => {
+      execute: async ({ kind, cron, runAt, prompt, sessionMode, timezone }) => {
         const tz = timezone ?? defaultTimezone;
+        if (kind === "once") {
+          if (!runAt) return { ok: false, error: "runAt is required for a one-off schedule." };
+          const error = validateOnce(runAt, tz);
+          if (error) return { ok: false, error };
+          const schedule = await store.add({ kind, chatId, runAt, prompt, sessionMode, timezone: tz });
+          scheduler.sync(schedule.id);
+          return { ok: true, schedule: summarize(schedule) };
+        }
+        if (!cron) return { ok: false, error: "cron is required for a recurring schedule." };
         const error = validateCron(cron, tz);
         if (error) return { ok: false, error: `Invalid cron expression: ${error}` };
-        const schedule = await store.add({ chatId, cron, prompt, sessionMode, timezone: tz });
+        const schedule = await store.add({ kind, chatId, cron, prompt, sessionMode, timezone: tz });
         scheduler.sync(schedule.id);
         return { ok: true, schedule: summarize(schedule) };
       },

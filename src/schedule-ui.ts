@@ -54,8 +54,9 @@ export function renderScheduleList(schedules: Schedule[]): string {
   }
   const lines = schedules.map((s, i) => {
     const state = s.enabled ? "▶️ enabled" : "⏸ paused";
+    const when = s.kind === "once" ? "one-time" : s.cron;
     return [
-      `${i + 1}. ${state} · ${s.cron}${s.sessionMode === "continue" ? " · continues chat" : ""}`,
+      `${i + 1}. ${state} · ${when}${s.sessionMode === "continue" ? " · continues chat" : ""}`,
       `   “${truncate(s.prompt)}”`,
       `   next: ${s.enabled ? formatNext(s) : "—"}`,
     ].join("\n");

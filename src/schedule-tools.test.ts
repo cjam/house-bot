@@ -43,7 +43,11 @@ async function setup(chatId = 100) {
 describe("create_schedule", () => {
   test("creates a schedule, syncs the scheduler, and stamps the chat + timezone", async () => {
     const { store, tools, synced, chatId } = await setup();
-    const res = await call(tools, "create_schedule", { cron: "0 17 * * 0", prompt: "plan meals" });
+    const res = await call(tools, "create_schedule", {
+      kind: "recurring",
+      cron: "0 17 * * 0",
+      prompt: "plan meals",
+    });
     expect(res.ok).toBe(true);
     const stored = store.list(chatId);
     expect(stored.length).toBe(1);
@@ -53,9 +57,37 @@ describe("create_schedule", () => {
 
   test("rejects an invalid cron expression without creating anything", async () => {
     const { store, tools } = await setup();
-    const res = await call(tools, "create_schedule", { cron: "nonsense", prompt: "x" });
+    const res = await call(tools, "create_schedule", {
+      kind: "recurring",
+      cron: "nonsense",
+      prompt: "x",
+    });
     expect(res.ok).toBe(false);
     expect(res.error).toContain("Invalid cron");
+    expect(store.list().length).toBe(0);
+  });
+
+  test("creates a one-off with a future datetime", async () => {
+    const { store, tools, chatId } = await setup();
+    const res = await call(tools, "create_schedule", {
+      kind: "once",
+      runAt: "2099-01-01T09:00:00",
+      prompt: "one-time reminder",
+    });
+    expect(res.ok).toBe(true);
+    const stored = store.list(chatId);
+    expect(stored[0]?.kind).toBe("once");
+  });
+
+  test("rejects a one-off in the past", async () => {
+    const { store, tools } = await setup();
+    const res = await call(tools, "create_schedule", {
+      kind: "once",
+      runAt: "2000-01-01T09:00:00",
+      prompt: "too late",
+    });
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain("past");
     expect(store.list().length).toBe(0);
   });
 });
@@ -63,8 +95,8 @@ describe("create_schedule", () => {
 describe("list_schedules", () => {
   test("returns only this chat's schedules", async () => {
     const { store, tools, chatId } = await setup();
-    await store.add({ chatId, cron: "0 0 * * *", prompt: "mine" });
-    await store.add({ chatId: 999, cron: "0 0 * * *", prompt: "theirs" });
+    await store.add({ kind: "recurring", chatId, cron: "0 0 * * *", prompt: "mine" });
+    await store.add({ kind: "recurring", chatId: 999, cron: "0 0 * * *", prompt: "theirs" });
     const res = await call(tools, "list_schedules", {});
     expect(res.schedules.map((s: { prompt: string }) => s.prompt)).toEqual(["mine"]);
   });
@@ -73,7 +105,7 @@ describe("list_schedules", () => {
 describe("ownership enforcement", () => {
   test("delete refuses a schedule owned by another chat", async () => {
     const { store, tools } = await setup(100);
-    const other = await store.add({ chatId: 200, cron: "0 0 * * *", prompt: "theirs" });
+    const other = await store.add({ kind: "recurring", chatId: 200, cron: "0 0 * * *", prompt: "theirs" });
     const res = await call(tools, "delete_schedule", { id: other.id });
     expect(res.ok).toBe(false);
     expect(store.get(other.id)).toBeDefined();
@@ -81,7 +113,7 @@ describe("ownership enforcement", () => {
 
   test("toggle refuses a schedule owned by another chat", async () => {
     const { store, tools } = await setup(100);
-    const other = await store.add({ chatId: 200, cron: "0 0 * * *", prompt: "theirs" });
+    const other = await store.add({ kind: "recurring", chatId: 200, cron: "0 0 * * *", prompt: "theirs" });
     const res = await call(tools, "toggle_schedule", { id: other.id, enabled: false });
     expect(res.ok).toBe(false);
     expect(store.get(other.id)?.enabled).toBe(true);
@@ -89,7 +121,7 @@ describe("ownership enforcement", () => {
 
   test("toggle and delete work on this chat's own schedule", async () => {
     const { store, tools, chatId } = await setup(100);
-    const mine = await store.add({ chatId, cron: "0 0 * * *", prompt: "mine" });
+    const mine = await store.add({ kind: "recurring", chatId, cron: "0 0 * * *", prompt: "mine" });
     expect((await call(tools, "toggle_schedule", { id: mine.id, enabled: false })).ok).toBe(true);
     expect(store.get(mine.id)?.enabled).toBe(false);
     expect((await call(tools, "delete_schedule", { id: mine.id })).ok).toBe(true);

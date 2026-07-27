@@ -170,23 +170,27 @@ architectures. (The CI workflow builds the arm64 image under QEMU emulation.)
 
 ## Scheduled prompts
 
-The bot can run a prompt on a recurring schedule and deliver the reply to a chat — e.g. a weekly
-"start planning next week's meals" nudge. There are two ways to manage schedules, and they operate
-on the same list:
+The bot can run a prompt on a schedule — recurring or one-time — and deliver the reply to a chat,
+e.g. a weekly "start planning next week's meals" nudge or a one-off "remind me to defrost the roast
+tomorrow at 4pm". There are two ways to manage schedules, and they operate on the same list:
 
 - **Just ask, in plain language.** The agent has tools to create, list, pause, and delete
-  schedules for the current chat: *"every Sunday at 5pm, start planning next week's meal plan"* →
-  it writes the cron expression and confirms. Times use your `TZ` (below) unless you name another.
+  schedules for the current chat: *"every Sunday at 5pm, start planning next week's meal plan"* or
+  *"remind me tomorrow at 4pm to defrost the roast"* → it fills in the cron expression or datetime
+  and confirms. Times use your `TZ` (below) unless you name another.
 - **`/schedules` command.** A live panel listing this chat's schedules with inline buttons to run,
   pause/resume, or delete each — handy when you'd rather tap than type.
 
-Each schedule stores a cron expression, the prompt, and a session mode: **fresh** (default) runs in
-isolation so a scheduled turn never pollutes an ongoing chat, while **continue** resumes the chat's
-current conversation. Schedules persist to `SCHEDULE_FILE` (default `data/schedules.json`) with the
-same atomic write as sessions. Timers run in-process (via [`croner`](https://github.com/hexagon/croner));
-if the bot is down when a schedule was due, the missed run fires once on the next startup. Cron
-times are interpreted in `TZ` (defaults to UTC), so set it to your local zone for "this week" and
-meal-plan dates to line up.
+A schedule is either **recurring** (a cron expression, e.g. `0 17 * * 0`) or a **one-off** (a fixed
+datetime like *"tomorrow at 3pm"*, which runs once and then deletes itself). Both store the prompt
+and a session mode: **fresh** (default) runs in isolation so a scheduled turn never pollutes an
+ongoing chat, while **continue** resumes the chat's current conversation.
+
+Schedules persist to `SCHEDULE_FILE` (default `data/schedules.json`) with the same atomic write as
+sessions. Timers run in-process (via [`croner`](https://github.com/hexagon/croner)); if the bot is
+down when a schedule was due, the missed run fires once on the next startup — including a one-off
+whose time passed while it was offline. Times are interpreted in `TZ` (defaults to UTC), so set it
+to your local zone for "this week", meal-plan dates, and one-off reminders to line up.
 
 ## Adding more MCP servers
 

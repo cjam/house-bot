@@ -7,18 +7,20 @@ import {
   encodeCallback,
 } from "./schedule-ui";
 
-const schedule = (over: Partial<Schedule> = {}): Schedule => ({
-  id: "a1b2c3d4",
-  chatId: 100,
-  cron: "0 17 * * 0",
-  prompt: "Start planning next week's meal plan",
-  enabled: true,
-  sessionMode: "fresh",
-  timezone: "UTC",
-  createdAt: 0,
-  lastRunAt: null,
-  ...over,
-});
+const schedule = (over: Partial<Schedule> = {}): Schedule =>
+  ({
+    id: "a1b2c3d4",
+    kind: "recurring",
+    chatId: 100,
+    cron: "0 17 * * 0",
+    prompt: "Start planning next week's meal plan",
+    enabled: true,
+    sessionMode: "fresh",
+    timezone: "UTC",
+    createdAt: 0,
+    lastRunAt: null,
+    ...over,
+  }) as Schedule;
 
 describe("parseCallback / encodeCallback", () => {
   test("round-trips every action", () => {
@@ -49,6 +51,13 @@ describe("renderScheduleList", () => {
     expect(text).toContain("1. ▶️ enabled");
     expect(text).toContain("2. ⏸ paused");
     expect(text).toContain("Start planning next week");
+  });
+
+  test("labels a one-off as one-time instead of a cron expression", () => {
+    const once = { ...schedule(), kind: "once", runAt: "2099-01-01T09:00:00" } as Schedule;
+    const text = renderScheduleList([once]);
+    expect(text).toContain("one-time");
+    expect(text).not.toContain("0 17 * * 0");
   });
 });
 

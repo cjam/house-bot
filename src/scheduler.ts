@@ -1,6 +1,11 @@
 import { Cron } from "croner";
 import type { Schedule, ScheduleStore } from "./schedules";
 
+/** The string croner schedules on: a cron expression, or a one-off's datetime. */
+function patternOf(schedule: Schedule): string {
+  return schedule.kind === "once" ? schedule.runAt : schedule.cron;
+}
+
 /**
  * Validate a cron expression (optionally for a given timezone) without
  * scheduling it. Returns null if valid, or a short error message. croner throws
@@ -17,11 +22,25 @@ export function validateCron(pattern: string, timezone?: string): string | null 
   }
 }
 
+/**
+ * Validate a one-off datetime (ISO-8601, interpreted in `timezone`). Returns
+ * null if valid, or a message. A time in the past is rejected: croner reports it
+ * as "no next run", which for a one-off means it would never fire.
+ */
+export function validateOnce(runAt: string, timezone?: string): string | null {
+  let next: Date | null;
+  try {
+    next = new Cron(runAt, timezone ? { timezone } : {}).nextRun();
+  } catch (err) {
+    return `Invalid datetime: ${err instanceof Error ? err.message : err}`;
+  }
+  return next === null ? "That time is in the past." : null;
+}
+
 /** The next fire time for a schedule, or null if it has no future occurrence. */
 export function nextRun(schedule: Schedule, from?: Date): Date | null {
-  return new Cron(schedule.cron, schedule.timezone ? { timezone: schedule.timezone } : {}).nextRun(
-    from,
-  );
+  const options = schedule.timezone ? { timezone: schedule.timezone } : {};
+  return new Cron(patternOf(schedule), options).nextRun(from);
 }
 
 export type Scheduler = {
@@ -46,25 +65,15 @@ type SchedulerDeps = {
 /**
  * Owns a croner timer per enabled schedule. Timers look the schedule up from the
  * store at fire time (rather than closing over a snapshot), so edits take effect
- * without re-registering, and `lastRunAt` is stamped after each successful run so
- * a restart can tell which runs it missed.
+ * without re-registering. Recurring runs stamp `lastRunAt` so a restart can tell
+ * which they missed; one-offs (and any pattern with no next run) are deleted once
+ * they fire, so they don't linger as dead records.
  */
 export function createScheduler(deps: SchedulerDeps): Scheduler {
   const { store, onFire } = deps;
   const log = deps.log ?? (() => {});
   const now = deps.now ?? Date.now;
   const jobs = new Map<string, Cron>();
-
-  async function fire(id: string): Promise<void> {
-    const schedule = store.get(id);
-    if (!schedule) return;
-    try {
-      await onFire(schedule);
-      await store.update(id, { lastRunAt: now() });
-    } catch (err) {
-      log(`Schedule "${id}" failed: ${err instanceof Error ? err.message : err}`);
-    }
-  }
 
   function unregister(id: string): void {
     jobs.get(id)?.stop();
@@ -74,21 +83,54 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
   function register(schedule: Schedule): void {
     unregister(schedule.id);
     const job = new Cron(
-      schedule.cron,
+      patternOf(schedule),
       { timezone: schedule.timezone, protect: true },
       () => void fire(schedule.id),
     );
     jobs.set(schedule.id, job);
   }
 
+  async function fire(id: string): Promise<void> {
+    const schedule = store.get(id);
+    if (!schedule) return;
+    try {
+      await onFire(schedule);
+      // A one-off — or any schedule with nothing left to run — is done; drop it
+      // and its timer. Recurring schedules just record when they last ran.
+      if (schedule.kind === "once" || nextRun(schedule) === null) {
+        unregister(id);
+        await store.remove(id);
+      } else {
+        await store.update(id, { lastRunAt: now() });
+      }
+    } catch (err) {
+      log(`Schedule "${id}" failed: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
   return {
     async start() {
       for (const schedule of store.list()) {
         if (!schedule.enabled) continue;
+
+        // A one-off whose time has already passed never registers. If it never
+        // ran, fire it now (a run missed while we were down); either way `fire`
+        // then cleans it up. A leftover already-run one-off is just removed.
+        if (schedule.kind === "once" && nextRun(schedule) === null) {
+          if (schedule.lastRunAt === null) {
+            log(`Schedule "${schedule.id}": firing a missed one-off.`);
+            await fire(schedule.id);
+          } else {
+            await store.remove(schedule.id);
+          }
+          continue;
+        }
+
         register(schedule);
-        // Catch up a run missed while the process was down: the first scheduled
-        // occurrence after the last successful run. Schedules that have never
-        // run are left alone so a fresh deploy doesn't fire everything at once.
+
+        // Catch up a recurring run missed while the process was down: the first
+        // occurrence after the last successful run. Never-run recurring
+        // schedules are left alone so a fresh deploy doesn't fire all at once.
         if (schedule.lastRunAt !== null) {
           const due = nextRun(schedule, new Date(schedule.lastRunAt));
           if (due && due.getTime() <= now()) {

@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createScheduleStore, type Schedule } from "./schedules";
-import { createScheduler, validateCron, nextRun } from "./scheduler";
+import { createScheduler, validateCron, validateOnce, nextRun } from "./scheduler";
 
 function tempStore() {
   const dir = mkdtempSync(join(tmpdir(), "house-bot-scheduler-"));
@@ -28,7 +28,7 @@ describe("validateCron", () => {
 
 describe("nextRun", () => {
   test("computes the next occurrence after a given time", () => {
-    const schedule = { cron: "0 0 * * *", timezone: "UTC" } as Schedule;
+    const schedule = { kind: "recurring", cron: "0 0 * * *", timezone: "UTC" } as Schedule;
     const next = nextRun(schedule, new Date("2026-07-27T05:00:00Z"));
     expect(next?.toISOString()).toBe("2026-07-28T00:00:00.000Z");
   });
@@ -39,7 +39,7 @@ describe("createScheduler catch-up on start", () => {
     const store = tempStore();
     await store.load();
     // Daily at noon UTC, last ran two days ago → an occurrence was missed.
-    const s = await store.add({ chatId: 1, cron: "0 12 * * *", prompt: "hi", timezone: "UTC" });
+    const s = await store.add({ kind: "recurring", chatId: 1, cron: "0 12 * * *", prompt: "hi", timezone: "UTC" });
     await store.update(s.id, { lastRunAt: Date.now() - 2 * DAY });
 
     const fired: Schedule[] = [];
@@ -55,7 +55,7 @@ describe("createScheduler catch-up on start", () => {
   test("does not fire a schedule that has never run", async () => {
     const store = tempStore();
     await store.load();
-    await store.add({ chatId: 1, cron: "0 12 * * *", prompt: "hi", timezone: "UTC" });
+    await store.add({ kind: "recurring", chatId: 1, cron: "0 12 * * *", prompt: "hi", timezone: "UTC" });
 
     const fired: Schedule[] = [];
     const scheduler = createScheduler({ store, onFire: async (sc) => void fired.push(sc) });
@@ -68,7 +68,7 @@ describe("createScheduler catch-up on start", () => {
   test("does not fire when no occurrence has elapsed since the last run", async () => {
     const store = tempStore();
     await store.load();
-    const s = await store.add({ chatId: 1, cron: "0 12 * * *", prompt: "hi", timezone: "UTC" });
+    const s = await store.add({ kind: "recurring", chatId: 1, cron: "0 12 * * *", prompt: "hi", timezone: "UTC" });
     await store.update(s.id, { lastRunAt: Date.now() - 60_000 }); // a minute ago
 
     const fired: Schedule[] = [];
@@ -82,7 +82,7 @@ describe("createScheduler catch-up on start", () => {
   test("ignores disabled schedules", async () => {
     const store = tempStore();
     await store.load();
-    const s = await store.add({ chatId: 1, cron: "0 12 * * *", prompt: "hi", timezone: "UTC" });
+    const s = await store.add({ kind: "recurring", chatId: 1, cron: "0 12 * * *", prompt: "hi", timezone: "UTC" });
     await store.update(s.id, { enabled: false, lastRunAt: Date.now() - 2 * DAY });
 
     const fired: Schedule[] = [];
@@ -94,11 +94,108 @@ describe("createScheduler catch-up on start", () => {
   });
 });
 
+describe("validateOnce", () => {
+  test("accepts a future datetime", () => {
+    expect(validateOnce("2099-01-01T00:00:00", "UTC")).toBeNull();
+  });
+
+  test("rejects a past datetime", () => {
+    expect(validateOnce("2000-01-01T00:00:00", "UTC")).toContain("past");
+  });
+
+  test("rejects a malformed datetime", () => {
+    expect(validateOnce("not-a-date")).not.toBeNull();
+  });
+});
+
+describe("createScheduler one-off handling", () => {
+  test("fires a one-off missed while down, then deletes it", async () => {
+    const store = tempStore();
+    await store.load();
+    const s = await store.add({
+      kind: "once",
+      chatId: 1,
+      runAt: "2000-01-01T00:00:00", // already past, never ran
+      prompt: "hi",
+      timezone: "UTC",
+    });
+
+    const fired: Schedule[] = [];
+    const scheduler = createScheduler({ store, onFire: async (sc) => void fired.push(sc) });
+    await scheduler.start();
+    scheduler.stop();
+
+    expect(fired.map((f) => f.id)).toEqual([s.id]);
+    expect(store.get(s.id)).toBeUndefined(); // auto-deleted after firing
+  });
+
+  test("drops a leftover one-off that already ran without re-firing", async () => {
+    const store = tempStore();
+    await store.load();
+    const s = await store.add({
+      kind: "once",
+      chatId: 1,
+      runAt: "2000-01-01T00:00:00",
+      prompt: "hi",
+      timezone: "UTC",
+    });
+    await store.update(s.id, { lastRunAt: Date.now() - DAY });
+
+    const fired: Schedule[] = [];
+    const scheduler = createScheduler({ store, onFire: async (sc) => void fired.push(sc) });
+    await scheduler.start();
+    scheduler.stop();
+
+    expect(fired).toEqual([]);
+    expect(store.get(s.id)).toBeUndefined();
+  });
+
+  test("keeps a future one-off registered without firing it on start", async () => {
+    const store = tempStore();
+    await store.load();
+    const s = await store.add({
+      kind: "once",
+      chatId: 1,
+      runAt: "2099-01-01T00:00:00",
+      prompt: "hi",
+      timezone: "UTC",
+    });
+
+    const fired: Schedule[] = [];
+    const scheduler = createScheduler({ store, onFire: async (sc) => void fired.push(sc) });
+    await scheduler.start();
+    scheduler.stop();
+
+    expect(fired).toEqual([]);
+    expect(store.get(s.id)).toBeDefined();
+  });
+
+  test("runNow fires a one-off and deletes it", async () => {
+    const store = tempStore();
+    await store.load();
+    const s = await store.add({
+      kind: "once",
+      chatId: 1,
+      runAt: "2099-01-01T00:00:00",
+      prompt: "hi",
+      timezone: "UTC",
+    });
+
+    const fired: Schedule[] = [];
+    const scheduler = createScheduler({ store, onFire: async (sc) => void fired.push(sc) });
+    await scheduler.runNow(s.id);
+    scheduler.stop();
+
+    expect(fired.map((f) => f.id)).toEqual([s.id]);
+    expect(store.get(s.id)).toBeUndefined();
+  });
+});
+
 describe("createScheduler runNow", () => {
   test("fires immediately regardless of enabled state and stamps lastRunAt", async () => {
     const store = tempStore();
     await store.load();
-    const s = await store.add({ chatId: 1, cron: "0 0 1 1 *", prompt: "hi", enabled: false });
+    const s = await store.add({ kind: "recurring", chatId: 1, cron: "0 0 1 1 *", prompt: "hi", enabled: false });
 
     const fired: Schedule[] = [];
     const scheduler = createScheduler({ store, onFire: async (sc) => void fired.push(sc) });
@@ -112,7 +209,7 @@ describe("createScheduler runNow", () => {
   test("swallows a throwing onFire and leaves lastRunAt untouched", async () => {
     const store = tempStore();
     await store.load();
-    const s = await store.add({ chatId: 1, cron: "0 0 1 1 *", prompt: "hi" });
+    const s = await store.add({ kind: "recurring", chatId: 1, cron: "0 0 1 1 *", prompt: "hi" });
 
     const logs: string[] = [];
     const scheduler = createScheduler({

@@ -9,12 +9,14 @@ function tempFile(): string {
   return join(dir, "schedules.json");
 }
 
-const input = (over: Partial<ScheduleInput> = {}): ScheduleInput => ({
-  chatId: 100,
-  cron: "0 17 * * 0",
-  prompt: "plan meals",
-  ...over,
-});
+const input = (over: Partial<ScheduleInput> = {}): ScheduleInput =>
+  ({
+    kind: "recurring",
+    chatId: 100,
+    cron: "0 17 * * 0",
+    prompt: "plan meals",
+    ...over,
+  }) as ScheduleInput;
 
 describe("createScheduleStore", () => {
   test("add assigns an id and sensible defaults", async () => {
@@ -36,6 +38,27 @@ describe("createScheduleStore", () => {
     expect(s.enabled).toBe(false);
     expect(s.sessionMode).toBe("continue");
     expect(s.timezone).toBe("America/Vancouver");
+  });
+
+  test("adds a one-off schedule with kind and runAt", async () => {
+    const store = createScheduleStore(tempFile());
+    await store.load();
+    const s = await store.add({
+      kind: "once",
+      chatId: 100,
+      runAt: "2026-07-28T17:00:00",
+      prompt: "remind me",
+    });
+    expect(s.kind).toBe("once");
+    if (s.kind === "once") expect(s.runAt).toBe("2026-07-28T17:00:00");
+  });
+
+  test("load backfills kind='recurring' for legacy records without a kind", async () => {
+    const file = tempFile();
+    writeFileSync(file, JSON.stringify({ legacy: { chatId: 1, cron: "0 0 * * *", prompt: "hi" } }));
+    const store = createScheduleStore(file);
+    await store.load();
+    expect(store.get("legacy")?.kind).toBe("recurring");
   });
 
   test("list filters by chat id and preserves insertion order", async () => {
@@ -90,7 +113,8 @@ describe("createScheduleStore", () => {
     writeFileSync(file, JSON.stringify({ good: { cron: "0 0 * * *" }, bad: { nope: 1 } }));
     const store = createScheduleStore(file);
     await store.load();
-    expect(store.get("good")?.cron).toBe("0 0 * * *");
+    const good = store.get("good");
+    expect(good?.kind === "recurring" && good.cron).toBe("0 0 * * *");
     expect(store.get("bad")).toBeUndefined();
   });
 
