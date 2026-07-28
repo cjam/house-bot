@@ -130,6 +130,9 @@ export type Config = {
   scheduleFile: string;
   /** Process timezone (from TZ), stamped on new schedules and used for display. */
   timezone?: string;
+  /** Default coordinates for the weather tool (the household's home). */
+  homeLat: number;
+  homeLong: number;
 };
 
 export function loadConfig(env: Env = process.env): Config {
@@ -149,5 +152,8 @@ export function loadConfig(env: Env = process.env): Config {
     sessionIdleMs: Number(env.SESSION_IDLE_MINUTES || 15) * 60_000,
     scheduleFile: env.SCHEDULE_FILE || "./data/schedules.json",
     timezone: env.TZ?.trim() || undefined,
+    // Default to Victoria, B.C.; the weather tool also accepts per-call coords.
+    homeLat: Number(env.HOME_LAT || 48.496),
+    homeLong: Number(env.HOME_LONG || -123.393),
   };
 }

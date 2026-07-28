@@ -11,6 +11,7 @@ import { createScheduleStore, type Schedule, type ScheduleStore } from "./schedu
 import { createScheduler, type Scheduler } from "./scheduler";
 import { createScheduleTools } from "./schedule-tools";
 import { renderScheduleList, buildScheduleKeyboard, parseCallback } from "./schedule-ui";
+import { createWeatherTool } from "./weather";
 
 const REPLY_CHUNK_SIZE = 4000;
 
@@ -284,6 +285,7 @@ async function main() {
   const tools: ToolSet = {
     ...mcp.tools,
     ...(webSearchTool ? { web_search: webSearchTool } : {}),
+    ...createWeatherTool({ defaultLat: config.homeLat, defaultLong: config.homeLong }),
   };
   console.log(
     `Model: ${config.provider}/${config.model}; web search ${config.webSearch ? "on" : "off"}.`,

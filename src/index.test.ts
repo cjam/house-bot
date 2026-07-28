@@ -91,6 +91,8 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     sessionFile: "unused.json",
     sessionIdleMs: 15 * 60_000,
     scheduleFile: "unused-schedules.json",
+    homeLat: 48.496,
+    homeLong: -123.393,
     ...overrides,
   };
 }
