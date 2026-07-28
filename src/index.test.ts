@@ -3,6 +3,7 @@ import type { Update } from "grammy/types";
 import { MockLanguageModelV4 } from "ai/test";
 import { createBot, chunkText, errorReplyFor, buildSystemPrompt } from "./index";
 import { createSessionStore } from "./sessions";
+import { createSettingsStore } from "./settings";
 import type { AskParams, AskResult } from "./agent";
 import type { Config } from "./config";
 
@@ -91,6 +92,7 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     sessionFile: "unused.json",
     sessionIdleMs: 15 * 60_000,
     scheduleFile: "unused-schedules.json",
+    settingsFile: "unused-settings.json",
     homeLat: 48.496,
     homeLong: -123.393,
     ...overrides,
@@ -139,8 +141,7 @@ describe("createBot allowlist", () => {
         askCalls.push(params);
         return { messages: [], text: "reply" };
       },
-      systemPrompt: "be helpful",
-      model: MODEL,
+      modelFor: () => MODEL,
       tools: TOOLS,
     });
     bot.botInfo = BOT_INFO;
@@ -167,8 +168,7 @@ describe("createBot allowlist", () => {
         askCalls.push(params);
         return { messages: [], text: "reply" };
       },
-      systemPrompt: "be helpful",
-      model: MODEL,
+      modelFor: () => MODEL,
       tools: TOOLS,
     });
     bot.botInfo = BOT_INFO;
@@ -186,6 +186,48 @@ describe("createBot allowlist", () => {
     expect(reply.payload.parse_mode).toBe("MarkdownV2");
   });
 
+  test("applies a chat's settings overrides (prompt, model, maxSteps) to the turn", async () => {
+    const askCalls: AskParams[] = [];
+    const modelSlugs: (string | undefined)[] = [];
+    const sessionStore = await tempSessionStore();
+
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const settingsStore = createSettingsStore(
+      join(mkdtempSync(join(tmpdir(), "house-bot-idx-settings-")), "settings.json"),
+    );
+    await settingsStore.load();
+    await settingsStore.update(100, {
+      systemPrompt: "CUSTOM PERSONA",
+      model: "some/model-slug",
+      maxSteps: 5,
+    });
+
+    const bot = createBot({
+      config: baseConfig(),
+      sessionStore,
+      settingsStore,
+      ask: async (params: AskParams): Promise<AskResult> => {
+        askCalls.push(params);
+        return { messages: [], text: "reply" };
+      },
+      modelFor: (slug) => {
+        modelSlugs.push(slug);
+        return MODEL;
+      },
+      tools: TOOLS,
+    });
+    bot.botInfo = BOT_INFO;
+    bot.api.config.use((_prev, _method, _payload) => Promise.resolve({ ok: true, result: true } as never));
+
+    await bot.handleUpdate(textUpdate(1, 100, "hello"));
+
+    expect(askCalls[0]?.systemPrompt).toContain("CUSTOM PERSONA");
+    expect(askCalls[0]?.maxSteps).toBe(5);
+    expect(modelSlugs).toContain("some/model-slug");
+  });
+
   test("falls back to plain text when Telegram rejects the MarkdownV2 formatting", async () => {
     const sentMessages: any[] = [];
     const sessionStore = await tempSessionStore();
@@ -194,8 +236,7 @@ describe("createBot allowlist", () => {
       config: baseConfig(),
       sessionStore,
       ask: async (): Promise<AskResult> => ({ messages: [], text: "**bold** reply" }),
-      systemPrompt: "be helpful",
-      model: MODEL,
+      modelFor: () => MODEL,
       tools: TOOLS,
     });
     bot.botInfo = BOT_INFO;
@@ -226,8 +267,7 @@ describe("createBot allowlist", () => {
       ask: async (): Promise<AskResult> => {
         throw new Error("Request rejected (429) rate limit exceeded");
       },
-      systemPrompt: "be helpful",
-      model: MODEL,
+      modelFor: () => MODEL,
       tools: TOOLS,
     });
     bot.botInfo = BOT_INFO;
@@ -256,8 +296,7 @@ describe("createBot /reset", () => {
       config: baseConfig(),
       sessionStore,
       ask: async (): Promise<AskResult> => ({ messages: [], text: "reply" }),
-      systemPrompt: "be helpful",
-      model: MODEL,
+      modelFor: () => MODEL,
       tools: TOOLS,
     });
     bot.botInfo = BOT_INFO;

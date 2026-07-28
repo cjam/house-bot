@@ -3,8 +3,12 @@ import type { LanguageModel, Tool } from "ai";
 import type { Config, Provider } from "./config";
 
 export type ResolvedProvider = {
-  /** The language model `ask()` drives. */
-  model: LanguageModel;
+  /**
+   * Resolve a model by slug, reusing the provider instance. Called per turn so a
+   * chat can override the model in its settings; `undefined` yields the
+   * configured default (`config.model`).
+   */
+  modelFor: (slug?: string) => LanguageModel;
   /**
    * The provider's built-in web-search tool, when enabled and available.
    * This is the stand-in for the Claude Code `WebSearch` builtin we lost with
@@ -32,7 +36,7 @@ export function resolveProvider(config: Config): ResolvedProvider {
     case "openrouter": {
       const openrouter = createOpenRouter({ apiKey: config.apiKey });
       return {
-        model: openrouter.chat(config.model),
+        modelFor: (slug) => openrouter.chat(slug || config.model),
         webSearchTool: config.webSearch ? openrouter.tools.webSearch({}) : undefined,
       };
     }

@@ -124,6 +124,7 @@ named volume in `docker-compose.yml`:
 
 - `data/sessions.json` — the chat-id → conversation-history map.
 - `data/schedules.json` — scheduled prompts (see [Scheduled prompts](#scheduled-prompts)).
+- `data/settings.json` — per-chat settings overrides (see [Per-chat settings](#per-chat-settings)).
 
 **This mount is required for anything to survive a restart.** Without a volume on `/app/data`,
 recreating the container starts every chat fresh and drops every schedule. The bundled compose
@@ -164,6 +165,8 @@ architectures. (The CI workflow builds the arm64 image under QEMU emulation.)
   conversation with the agent.
 - `/schedules` — list this chat's scheduled prompts with inline buttons to **run now**,
   **pause/resume**, and **delete** each one.
+- `/settings` — show this chat's settings; `/setlocation <place>`, `/setprompt <text>`, and
+  `/resetsettings` change them (see [Per-chat settings](#per-chat-settings)).
 - Any other text message is sent to the agent as a new turn (continuing the chat's existing
   conversation), with a "typing…" indicator while it works. Long replies are split into chunks
   under Telegram's 4096-character message cap.
@@ -191,6 +194,28 @@ sessions. Timers run in-process (via [`croner`](https://github.com/hexagon/crone
 down when a schedule was due, the missed run fires once on the next startup — including a one-off
 whose time passed while it was offline. Times are interpreted in `TZ` (defaults to UTC), so set it
 to your local zone for "this week", meal-plan dates, and one-off reminders to line up.
+
+## Per-chat settings
+
+Each chat can override the deployment defaults for its own conversations. Overridable settings:
+
+- **System prompt** — a custom persona/instructions for this chat (falls back to `SYSTEM_PROMPT`).
+- **Location** — the household's coordinates, used by the weather tool. Set by name; it's geocoded,
+  and the place's **timezone** is adopted at the same time.
+- **Timezone** — for the injected date and new schedules (set on its own, or via location).
+- **Model** — a model slug for this chat, overriding the default; and **max steps** for the loop.
+
+Settings are **overrides layered over the defaults**, resolved per turn — an unset field just uses
+the `.env` value. As with schedules, there are two ways to change them:
+
+- **Just ask.** *"We're in Tofino this week — set our location"* or *"use claude-sonnet here"* →
+  the agent's settings tools update this chat and confirm.
+- **Slash commands.** `/settings` shows the current values (marking each custom vs. default);
+  `/setlocation <place>`, `/setprompt <text>`, and `/resetsettings` change or revert them.
+
+Overrides persist to `SETTINGS_FILE` (default `data/settings.json`), kept **separate** from the
+session and schedule files on purpose: settings are cold (rarely written), so folding them into the
+per-message session record would rewrite them on every message.
 
 ## Adding more MCP servers
 
@@ -226,11 +251,14 @@ startup log will tell you if a server failed to connect.
 - Scheduled prompts persist to `data/schedules.json` (same atomic write), each tagged with the
   chat that owns it. The management tools and `/schedules` buttons only ever see and touch the
   current chat's schedules, so one allowed chat can't manage another's.
+- Per-chat settings persist to `data/settings.json` (same atomic write), keyed by chat id, and are
+  resolved as overrides over the `.env` defaults on every turn. The settings tools and `/set*`
+  commands are bound to the current chat, so one chat can't read or change another's.
 - The allowlist middleware silently drops updates from any chat not in `ALLOWED_CHAT_IDS` — no
   reply, no log noise from randos finding the bot.
-- The agent can only call the tools it's handed: your configured MCP tools, plus the optional web
-  search when `WEB_SEARCH=true`. There is no shell/filesystem tool in the set at all — the tool set
-  *is* the allowlist. Still, that MCP server can do whatever its API allows, so think hard about
+- The agent can only call the tools it's handed: your configured MCP tools, the built-in weather,
+  schedule, and settings tools, plus the optional web search when `WEB_SEARCH=true`. There is no
+  shell/filesystem tool in the set at all — the tool set *is* the allowlist. Still, that MCP server can do whatever its API allows, so think hard about
   what's on the other end before pointing the bot at it.
 - `.env` is gitignored; only `.env.example` (with empty values) is committed. This repo is public
   — never commit real tokens.

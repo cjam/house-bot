@@ -1,10 +1,10 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
+import { geocode } from "./geocode";
 
 /** Open-Meteo APIs — all free, documented, and keyless. */
 const FORECAST_ENDPOINT = "https://api.open-meteo.com/v1/forecast";
 const AIR_ENDPOINT = "https://air-quality-api.open-meteo.com/v1/air-quality";
-const GEO_ENDPOINT = "https://geocoding-api.open-meteo.com/v1/search";
 const MAX_DAYS = 16;
 /** Air quality forecasts only reach ~7 days; days beyond that get no AQI. */
 const MAX_AQ_DAYS = 7;
@@ -102,17 +102,14 @@ async function resolveLocation(
   doFetch: typeof fetch,
 ): Promise<Located> {
   if (args.place) {
-    const url = `${GEO_ENDPOINT}?name=${encodeURIComponent(args.place)}&count=1&language=en&format=json`;
-    const res = await doFetch(url);
-    if (!res.ok) return { error: `Geocoding returned HTTP ${res.status}.` };
-    const data = (await res.json()) as { results?: any[] };
-    const hit = data.results?.[0];
+    let hit;
+    try {
+      hit = await geocode(args.place, doFetch);
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
     if (!hit) return { error: `Couldn't find a location named "${args.place}".` };
-    return {
-      lat: hit.latitude,
-      long: hit.longitude,
-      name: [hit.name, hit.admin1, hit.country_code].filter(Boolean).join(", "),
-    };
+    return { lat: hit.lat, long: hit.long, name: hit.name };
   }
   return { lat: args.lat ?? deps.defaultLat, long: args.long ?? deps.defaultLong };
 }

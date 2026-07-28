@@ -12,6 +12,9 @@ import { createScheduler, type Scheduler } from "./scheduler";
 import { createScheduleTools } from "./schedule-tools";
 import { renderScheduleList, buildScheduleKeyboard, parseCallback } from "./schedule-ui";
 import { createWeatherTool } from "./weather";
+import { createSettingsStore, type SettingsStore } from "./settings";
+import { createSettingsTools, resolveEffective, renderSettings } from "./settings-tools";
+import { geocode } from "./geocode";
 
 const REPLY_CHUNK_SIZE = 4000;
 
@@ -21,15 +24,17 @@ const REPLY_CHUNK_SIZE = 4000;
  * can't do without. Today the always-on layer is just the date — the Claude
  * Agent SDK used to supply this automatically; the plain AI SDK does not, so
  * without it the model can't reason about relative dates ("this week",
- * "today's meals"). Uses the process timezone — set the TZ env var to control it.
+ * "today's meals"). Defaults to the process timezone (the TZ env var); a chat can
+ * override it via its settings, passed in as `timeZone`.
  */
-export function buildSystemPrompt(base: string, now: Date = new Date()): string {
+export function buildSystemPrompt(base: string, now: Date = new Date(), timeZone?: string): string {
   const date = new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     year: "numeric",
     month: "long",
     day: "numeric",
     timeZoneName: "short",
+    timeZone,
   }).format(now);
   return `${base}\n\nToday's date is ${date}.`;
 }
@@ -80,11 +85,16 @@ export type BotDeps = {
   config: Config;
   sessionStore: SessionStore;
   ask: (params: AskParams) => Promise<AskResult>;
-  systemPrompt: string;
-  /** The resolved model every turn runs on. */
-  model: LanguageModel;
-  /** MCP tools (plus any provider web-search tool), merged into one set. */
+  /** Resolve the model for a turn by slug (per-chat override), or the default. */
+  modelFor: (slug?: string) => LanguageModel;
+  /** MCP tools (plus any provider web-search tool); per-turn tools are merged on top. */
   tools: ToolSet;
+  /**
+   * Per-chat settings. When provided, the bot wires the `/settings` commands and
+   * settings agent tools, and resolves each turn's prompt/location/timezone/
+   * model/steps against these overrides. Omitted in tests → deployment defaults.
+   */
+  settingsStore?: SettingsStore;
   /**
    * Schedule persistence. When provided (with `makeScheduler`), the bot wires up
    * scheduled prompts: the `/schedules` command, the schedule-management agent
@@ -97,8 +107,6 @@ export type BotDeps = {
    * (which needs the bot's turn runner) stays inside `createBot`.
    */
   makeScheduler?: (onFire: (schedule: Schedule) => Promise<void>) => Scheduler;
-  /** Default timezone stamped on schedules created without an explicit one. */
-  defaultTimezone?: string;
 };
 
 export function createBot(deps: BotDeps): Bot {
@@ -130,10 +138,12 @@ export function createBot(deps: BotDeps): Bot {
   let scheduler: Scheduler | undefined;
 
   /**
-   * Run one agent turn for a chat and deliver the reply. `useSession` threads the
-   * chat's live conversation (and persists the result); scheduled "fresh" runs
-   * pass false to stay isolated. When scheduling is wired, the per-chat
-   * schedule-management tools are merged in so the model can manage schedules.
+   * Run one agent turn for a chat and deliver the reply. Resolves the chat's
+   * effective settings (prompt, location, timezone, model, step cap) first, then
+   * builds the per-chat tools (weather uses the chat's location; schedule and
+   * settings tools are bound to the chat) on top of the shared base tools.
+   * `useSession` threads the chat's live conversation (and persists the result);
+   * scheduled "fresh" runs pass false to stay isolated.
    */
   async function runTurn(args: {
     chatId: number;
@@ -141,22 +151,30 @@ export function createBot(deps: BotDeps): Bot {
     useSession: boolean;
   }): Promise<void> {
     const priorMessages = args.useSession ? (deps.sessionStore.get(args.chatId) ?? []) : [];
+    const settings = deps.settingsStore?.get(args.chatId) ?? {};
+    const eff = resolveEffective(deps.config, settings);
+
+    const weatherTools = createWeatherTool({ defaultLat: eff.lat, defaultLong: eff.long });
     const scheduleTools =
       deps.store && scheduler
         ? createScheduleTools({
             store: deps.store,
             scheduler,
             chatId: args.chatId,
-            defaultTimezone: deps.defaultTimezone,
+            defaultTimezone: eff.timezone,
           })
         : {};
+    const settingsTools = deps.settingsStore
+      ? createSettingsTools({ store: deps.settingsStore, chatId: args.chatId, defaults: deps.config })
+      : {};
+
     const result = await deps.ask({
       messages: priorMessages,
       prompt: args.prompt,
-      systemPrompt: buildSystemPrompt(deps.systemPrompt),
-      model: deps.model,
-      tools: { ...deps.tools, ...scheduleTools },
-      maxSteps: deps.config.maxSteps,
+      systemPrompt: buildSystemPrompt(eff.systemPrompt, new Date(), eff.timezone),
+      model: deps.modelFor(eff.modelSlug),
+      tools: { ...deps.tools, ...weatherTools, ...scheduleTools, ...settingsTools },
+      maxSteps: eff.maxSteps,
     });
     if (args.useSession) await deps.sessionStore.set(args.chatId, result.messages);
     await sendReply(bot.api, args.chatId, result.text);
@@ -175,6 +193,54 @@ export function createBot(deps: BotDeps): Bot {
       await ctx.reply(errorReplyFor(err));
     }
   });
+
+  if (deps.settingsStore) {
+    const settingsStore = deps.settingsStore;
+
+    bot.command("settings", async (ctx) => {
+      await ctx.reply(renderSettings(deps.config, settingsStore.get(ctx.chat.id)));
+    });
+
+    bot.command("setlocation", async (ctx) => {
+      const place = ctx.match.trim();
+      if (!place) {
+        await ctx.reply("Usage: /setlocation <place> — e.g. /setlocation Nanaimo, BC");
+        return;
+      }
+      let hit;
+      try {
+        hit = await geocode(place);
+      } catch (err) {
+        await ctx.reply(`Location lookup failed: ${err instanceof Error ? err.message : err}`);
+        return;
+      }
+      if (!hit) {
+        await ctx.reply(`Couldn't find a location named "${place}".`);
+        return;
+      }
+      // Adopt the place's timezone too (undefined is ignored by the store).
+      await settingsStore.update(ctx.chat.id, {
+        location: { name: hit.name, lat: hit.lat, long: hit.long },
+        timezone: hit.timezone,
+      });
+      await ctx.reply(renderSettings(deps.config, settingsStore.get(ctx.chat.id)));
+    });
+
+    bot.command("setprompt", async (ctx) => {
+      const text = ctx.match.trim();
+      if (!text) {
+        await ctx.reply("Usage: /setprompt <system prompt text>");
+        return;
+      }
+      await settingsStore.update(ctx.chat.id, { systemPrompt: text });
+      await ctx.reply("System prompt updated for this chat.");
+    });
+
+    bot.command("resetsettings", async (ctx) => {
+      await settingsStore.clear(ctx.chat.id);
+      await ctx.reply(`Settings reset to defaults.\n\n${renderSettings(deps.config, settingsStore.get(ctx.chat.id))}`);
+    });
+  }
 
   if (deps.store && deps.makeScheduler) {
     const store = deps.store;
@@ -274,7 +340,10 @@ async function main() {
   const scheduleStore = createScheduleStore(config.scheduleFile);
   await scheduleStore.load();
 
-  const { model, webSearchTool } = resolveProvider(config);
+  const settingsStore = createSettingsStore(config.settingsFile);
+  await settingsStore.load();
+
+  const { modelFor, webSearchTool } = resolveProvider(config);
 
   console.log("Connecting MCP servers...");
   const mcp = await createMcpTools(config.mcpServers, (line) => console.log(line));
@@ -282,10 +351,11 @@ async function main() {
     console.log(line);
   }
 
+  // Base tools shared across chats. The weather, schedule, and settings tools are
+  // built per turn (they depend on the chat's location/id), so they're not here.
   const tools: ToolSet = {
     ...mcp.tools,
     ...(webSearchTool ? { web_search: webSearchTool } : {}),
-    ...createWeatherTool({ defaultLat: config.homeLat, defaultLong: config.homeLong }),
   };
   console.log(
     `Model: ${config.provider}/${config.model}; web search ${config.webSearch ? "on" : "off"}.`,
@@ -296,11 +366,10 @@ async function main() {
     config,
     sessionStore,
     ask: realAsk,
-    systemPrompt: config.systemPrompt,
-    model,
+    modelFor,
     tools,
+    settingsStore,
     store: scheduleStore,
-    defaultTimezone: config.timezone,
     makeScheduler: (onFire) => {
       scheduler = createScheduler({ store: scheduleStore, onFire, log: (line) => console.log(line) });
       return scheduler;
@@ -315,6 +384,10 @@ async function main() {
   await bot.api
     .setMyCommands([
       { command: "schedules", description: "List & manage scheduled prompts" },
+      { command: "settings", description: "Show this chat's settings" },
+      { command: "setlocation", description: "Set the household's location" },
+      { command: "setprompt", description: "Set a custom system prompt for this chat" },
+      { command: "resetsettings", description: "Revert settings to defaults" },
       { command: "reset", description: "Start a fresh conversation" },
     ])
     .catch((err) => console.error("setMyCommands failed:", err instanceof Error ? err.message : err));
