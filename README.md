@@ -239,6 +239,17 @@ tuning the system prompt, and the `fresh` vs. resumed flag — handy for spottin
 unexpectedly losing its context. It grows unbounded (append-only), so prune or rotate it yourself if
 it gets large. Logging failures are swallowed — they never fail a turn.
 
+## Agents & tool scoping
+
+The bot runs a **meal-planning agent** (the household assistant) scoped to ~16 Mealie tools — the
+meal-plan, recipe-search, cleanup, and shopping-list ones — rather than all ~130 the server exposes.
+A smaller, relevant tool surface makes the model's tool selection far more reliable. Recipe creation
+is delegated to a **recipe sub-agent**: the planner calls `find_or_create_recipe`, which runs a
+focused, *isolated* nested turn with only the recipe tools (search / create / import) and returns the
+recipe's title and slug — so the planning thread stays clean and the sub-agent can't wander into meal
+plans or shopping lists. Agent definitions (persona + scoped tools) live in
+[`src/agents.ts`](src/agents.ts).
+
 ## Adding more MCP servers
 
 Add another key to the `MCP_SERVERS` JSON — no code changes needed. For example, to add Homebox

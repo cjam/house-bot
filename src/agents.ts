@@ -19,28 +19,23 @@ export type AgentDefinition = {
 
 /**
  * The Mealie tools the meal-planning agent needs: read/write the week's plan,
- * find and inspect recipes, run the recipe-cleanup workflow, import recipes, and
- * manage the shopping list. Recipe *creation/import* stays here for now; once the
- * recipe sub-agent lands it moves there and this list tightens. Keys are the
- * resolved (namespaced) tool names; any not present on the connected server are
- * skipped with a log line, so a Mealie version mismatch degrades gracefully.
+ * find and inspect recipes, run the recipe-cleanup workflow, and manage the
+ * shopping list. Recipe *creation/import* is delegated to the recipe sub-agent
+ * (via the find_or_create_recipe tool), so it's deliberately absent here. Keys
+ * are the resolved (namespaced) tool names; any not present on the connected
+ * server are skipped with a log line, so a Mealie version mismatch degrades
+ * gracefully.
  */
 export const PLANNER_MCP_TOOLS = [
   // Meal plan
   "mealie_get_mealplans",
   "mealie_replace_week_meal_plan",
   "mealie_get_todays_meals_api_households_mealplans_today_get",
-  // Recipes — find & inspect
+  // Recipes — find & inspect (creation/import is the sub-agent's job)
   "mealie_get_all_recipes",
   "mealie_get_all_api_recipes_get",
   "mealie_get_recipes_detail",
   "mealie_suggest_recipes_by_name",
-  // Recipes — create & import
-  "mealie_create_recipe",
-  "mealie_import_and_cleanup_recipe",
-  "mealie_enrich_recipe",
-  "mealie_get_import_queue_report",
-  "mealie_apply_import_queue",
   // Recipes — cleanup workflow
   "mealie_get_recipes_needing_cleanup",
   "mealie_cleanup_recipe",
@@ -59,6 +54,37 @@ export const plannerAgent: AgentDefinition = {
   name: "planner",
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   mcpTools: PLANNER_MCP_TOOLS,
+};
+
+/** Focused persona for the recipe sub-agent (find-or-create one recipe). */
+const RECIPE_AGENT_PROMPT = `You find or create exactly ONE Mealie recipe, then report back concisely. Steps:
+1. SEARCH the library by name first (search is fuzzy — try the name and a variant or two). Never create a recipe that already exists.
+2. If a matching recipe exists, you're done — return its exact title and slug.
+3. If it doesn't exist and an import URL was given, import it (import_and_cleanup_recipe).
+4. Otherwise create it (create_recipe) with sensible ingredients and steps from the name and any notes; you may flesh it out with set_recipe_ingredients / set_recipe_steps.
+Do not touch meal plans or shopping lists. End your reply with the final recipe's exact title and slug.`;
+
+/**
+ * The Mealie tools the recipe sub-agent needs: find, create, import, and flesh
+ * out a single recipe. No meal-plan or shopping-list tools — that keeps its
+ * context (and its blast radius) tight.
+ */
+export const RECIPE_MCP_TOOLS = [
+  "mealie_get_all_recipes",
+  "mealie_get_all_api_recipes_get",
+  "mealie_get_recipes_detail",
+  "mealie_create_recipe",
+  "mealie_import_and_cleanup_recipe",
+  "mealie_enrich_recipe",
+  "mealie_set_recipe_ingredients",
+  "mealie_set_recipe_steps",
+];
+
+/** The recipe find-or-create sub-agent, invoked by the planner as a tool. */
+export const recipeAgent: AgentDefinition = {
+  name: "recipe",
+  systemPrompt: RECIPE_AGENT_PROMPT,
+  mcpTools: RECIPE_MCP_TOOLS,
 };
 
 /** Select the named tools from a set; reports any that weren't found. */

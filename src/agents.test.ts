@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolSet } from "ai";
-import { pickTools, plannerAgent } from "./agents";
+import { pickTools, plannerAgent, recipeAgent } from "./agents";
 
 const fakeTools = (names: string[]): ToolSet =>
   Object.fromEntries(names.map((n) => [n, { description: n } as any]));
@@ -36,5 +36,23 @@ describe("plannerAgent", () => {
     ]) {
       expect(plannerAgent.mcpTools).toContain(key);
     }
+  });
+
+  test("delegates recipe creation — it does not carry create/import tools", () => {
+    expect(plannerAgent.mcpTools).not.toContain("mealie_create_recipe");
+    expect(plannerAgent.mcpTools).not.toContain("mealie_import_and_cleanup_recipe");
+  });
+});
+
+describe("recipeAgent", () => {
+  test("owns creation/import and can search, but not meal-plan tools", () => {
+    expect(recipeAgent.mcpTools).toContain("mealie_create_recipe");
+    expect(recipeAgent.mcpTools).toContain("mealie_import_and_cleanup_recipe");
+    expect(recipeAgent.mcpTools).toContain("mealie_get_all_api_recipes_get");
+    expect(recipeAgent.mcpTools).not.toContain("mealie_replace_week_meal_plan");
+  });
+
+  test("its persona tells it to search before creating", () => {
+    expect(recipeAgent.systemPrompt.toLowerCase()).toContain("search");
   });
 });

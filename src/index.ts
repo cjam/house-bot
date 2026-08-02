@@ -16,7 +16,8 @@ import { createSettingsStore, type SettingsStore } from "./settings";
 import { createSettingsTools, resolveEffective, renderSettings } from "./settings-tools";
 import { geocode } from "./geocode";
 import { createTranscriptLogger, type TranscriptLogger } from "./transcript";
-import { plannerAgent, pickTools } from "./agents";
+import { plannerAgent, recipeAgent, pickTools } from "./agents";
+import { createRecipeTool } from "./recipe-tool";
 
 const REPLY_CHUNK_SIZE = 4000;
 
@@ -396,8 +397,18 @@ async function main() {
   console.log(
     `Planner scoped to ${Object.keys(plannerMcpTools).length} Mealie tools (of ${Object.keys(mcp.tools).length}).`,
   );
+
+  // The recipe sub-agent: its own scoped Mealie tools, exposed to the planner as
+  // the find_or_create_recipe tool (a nested, isolated agent turn).
+  const { tools: recipeMcpTools, missing: recipeMissing } = pickTools(mcp.tools, recipeAgent.mcpTools);
+  if (recipeMissing.length > 0) {
+    console.log(`Recipe agent: ${recipeMissing.length} scoped tool(s) not found: ${recipeMissing.join(", ")}`);
+  }
+  const recipeTool = createRecipeTool({ ask: realAsk, modelFor, tools: recipeMcpTools, agent: recipeAgent });
+
   const tools: ToolSet = {
     ...plannerMcpTools,
+    ...recipeTool,
     ...(webSearchTool ? { web_search: webSearchTool } : {}),
   };
   console.log(
