@@ -93,19 +93,10 @@ function parseProvider(env: Env): Provider {
   throw new Error(`PROVIDER must be one of ${Object.keys(PROVIDERS).join(", ")} (got "${value}")`);
 }
 
-/**
- * Default persona/instructions. Overridable per deployment via SYSTEM_PROMPT so
- * the bot can be tailored to whatever MCP servers an instance exposes. Always-on
- * runtime context (today's date, etc.) is layered on top of this at request time,
- * so a custom prompt can't accidentally drop it.
- */
-export const DEFAULT_SYSTEM_PROMPT =
-  "You are a household assistant replying over Telegram chat. Use the available tools for " +
-  "anything the data can answer, and never guess at information a tool could provide. " +
-  "Be brief: reply in the fewest words that fully answer, with no preamble, no restating of " +
-  "the question, and no unsolicited follow-up suggestions. Prefer a short bulleted list of " +
-  "names or values over paragraphs, and add detail only when asked. Confirm before any " +
-  "destructive or bulk action.";
+// The base persona/instructions live in their own module (committed, so they
+// ship via CI); SYSTEM_PROMPT still overrides. Re-exported here for callers/tests.
+export { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
+import { DEFAULT_SYSTEM_PROMPT } from "./system-prompt";
 
 export type Config = {
   telegramToken: string;
