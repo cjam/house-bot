@@ -14,6 +14,7 @@ const DEFAULTS: SettingsDefaults = {
   timezone: "America/Vancouver",
   model: "google/gemini-2.5-flash",
   maxSteps: 12,
+  planDays: 5,
 };
 
 function tempStore(): SettingsStore {
@@ -51,6 +52,7 @@ describe("resolveEffective", () => {
       timezone: "America/Vancouver",
       modelSlug: undefined,
       maxSteps: 12,
+      planDays: 5,
     });
   });
 
@@ -66,6 +68,11 @@ describe("resolveEffective", () => {
     expect(eff.locationName).toBe("Tofino");
     expect(eff.modelSlug).toBe("anthropic/claude-sonnet-4.5");
     expect(eff.maxSteps).toBe(20);
+  });
+
+  test("applies a planDays override", () => {
+    expect(resolveEffective(DEFAULTS, { planDays: 7 }).planDays).toBe(7);
+    expect(resolveEffective(DEFAULTS, {}).planDays).toBe(5);
   });
 });
 

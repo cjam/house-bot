@@ -62,6 +62,23 @@ function describeCode(code: unknown): string | null {
   return WMO[code] ?? `Weather code ${code}`;
 }
 
+/** WMO code → a single weather emoji, for the compact meal-plan card. */
+export function emojiForCode(code: number | null | undefined): string {
+  if (typeof code !== "number") return "❓";
+  if (code === 0) return "☀️";
+  if (code === 1) return "🌤️";
+  if (code === 2) return "⛅";
+  if (code === 3) return "☁️";
+  if (code === 45 || code === 48) return "🌫️";
+  if (code >= 51 && code <= 57) return "🌦️"; // drizzle
+  if (code >= 61 && code <= 67) return "🌧️"; // rain
+  if (code >= 71 && code <= 77) return "🌨️"; // snow
+  if (code >= 80 && code <= 82) return "🌧️"; // rain showers
+  if (code === 85 || code === 86) return "🌨️"; // snow showers
+  if (code >= 95) return "⛈️"; // thunderstorm
+  return "❓";
+}
+
 function secondsToHours(seconds: unknown): number | null {
   return typeof seconds === "number" ? Math.round(seconds / 360) / 10 : null;
 }
@@ -143,8 +160,10 @@ async function airMaxByDate(loc: Coords, days: number, doFetch: typeof fetch): P
 }
 
 /** One day of the combined forecast, trimmed to what meal planning needs. */
-type ForecastDay = {
+export type ForecastDay = {
   date: string | null;
+  /** Raw WMO weather code, for emoji mapping in the meal-plan card. */
+  code: number | null;
   summary: string | null;
   highC: number | null;
   lowC: number | null;
@@ -183,6 +202,7 @@ function mapForecast(daily: any, hourly: any, aqiByDate: Map<string, number>, co
     const maxAqi = date === null ? undefined : aqiByDate.get(date);
     days.push({
       date,
+      code: typeof daily?.weather_code?.[i] === "number" ? daily.weather_code[i] : null,
       summary: describeCode(daily?.weather_code?.[i]),
       highC: daily?.temperature_2m_max?.[i] ?? null,
       lowC: daily?.temperature_2m_min?.[i] ?? null,
@@ -199,6 +219,61 @@ function mapForecast(daily: any, hourly: any, aqiByDate: Map<string, number>, co
     });
   }
   return days;
+}
+
+type ForecastResult =
+  | { ok: true; location: Coords; forecast: ForecastDay[] }
+  | { ok: false; error: string };
+
+/**
+ * Fetch and stitch the daily/hourly forecast + air quality for resolved coords.
+ * Shared by the `get_forecast` tool and the meal-plan card. Makes the forecast
+ * and air-quality requests in parallel; AQI degrades to "none" on failure but
+ * never gates the forecast.
+ */
+export async function fetchForecast(loc: Coords, count: number, doFetch: typeof fetch): Promise<ForecastResult> {
+  // Air quality runs concurrently and degrades to "no AQI" on failure.
+  const airPromise = airMaxByDate(loc, count, doFetch).catch(() => new Map<string, number>());
+
+  const params = new URLSearchParams({
+    latitude: String(loc.lat),
+    longitude: String(loc.long),
+    daily: DAILY_FIELDS,
+    hourly: HOURLY_FIELDS,
+    timezone: "auto",
+    forecast_days: String(count),
+  });
+  try {
+    const res = await doFetch(`${FORECAST_ENDPOINT}?${params}`);
+    if (!res.ok) return { ok: false, error: `Weather API returned HTTP ${res.status}.` };
+    const data = (await res.json()) as { daily?: unknown; hourly?: unknown };
+    const aqiByDate = await airPromise;
+    return { ok: true, location: loc, forecast: mapForecast(data.daily, data.hourly, aqiByDate, count) };
+  } catch (err) {
+    return { ok: false, error: `Weather lookup failed: ${err instanceof Error ? err.message : err}` };
+  }
+}
+
+/**
+ * Fetch the forecast for the household's home coordinates, keyed by local date,
+ * for the meal-plan card. Returns an empty map on any failure — the card renders
+ * fine without weather, so a forecast hiccup never blocks presenting a plan.
+ */
+export async function forecastByDate(deps: {
+  lat: number;
+  long: number;
+  days: number;
+  fetchImpl?: typeof fetch;
+}): Promise<Map<string, ForecastDay>> {
+  const doFetch = deps.fetchImpl ?? fetch;
+  const count = Math.min(Math.max(deps.days, 1), MAX_DAYS);
+  const result = await fetchForecast({ lat: deps.lat, long: deps.long }, count, doFetch);
+  const byDate = new Map<string, ForecastDay>();
+  if (!result.ok) return byDate;
+  for (const day of result.forecast) {
+    if (day.date) byDate.set(day.date, day);
+  }
+  return byDate;
 }
 
 /**
@@ -238,32 +313,7 @@ export function createWeatherTool(deps: WeatherDeps): ToolSet {
       execute: async ({ place, lat, long, days }) => {
         const loc = await resolveLocation({ place, lat, long }, deps, doFetch);
         if ("error" in loc) return { ok: false, error: loc.error };
-        const count = days ?? 7;
-
-        // Air quality runs concurrently and degrades to "no AQI" on failure.
-        const airPromise = airMaxByDate(loc, count, doFetch).catch(() => new Map<string, number>());
-
-        const params = new URLSearchParams({
-          latitude: String(loc.lat),
-          longitude: String(loc.long),
-          daily: DAILY_FIELDS,
-          hourly: HOURLY_FIELDS,
-          timezone: "auto",
-          forecast_days: String(count),
-        });
-        try {
-          const res = await doFetch(`${FORECAST_ENDPOINT}?${params}`);
-          if (!res.ok) return { ok: false, error: `Weather API returned HTTP ${res.status}.` };
-          const data = (await res.json()) as { daily?: unknown; hourly?: unknown };
-          const aqiByDate = await airPromise;
-          return {
-            ok: true,
-            location: loc,
-            forecast: mapForecast(data.daily, data.hourly, aqiByDate, count),
-          };
-        } catch (err) {
-          return { ok: false, error: `Weather lookup failed: ${err instanceof Error ? err.message : err}` };
-        }
+        return fetchForecast(loc, days ?? 7, doFetch);
       },
     }),
   };

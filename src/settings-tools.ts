@@ -7,7 +7,7 @@ import { geocode, type GeocodeResult } from "./geocode";
 /** The subset of config that supplies defaults for the per-chat overrides. */
 export type SettingsDefaults = Pick<
   Config,
-  "systemPrompt" | "homeLat" | "homeLong" | "timezone" | "model" | "maxSteps"
+  "systemPrompt" | "homeLat" | "homeLong" | "timezone" | "model" | "maxSteps" | "planDays"
 >;
 
 /** A chat's settings resolved against the deployment defaults, used per turn. */
@@ -20,6 +20,7 @@ export type EffectiveSettings = {
   /** Model slug, or undefined to use the provider default. */
   modelSlug?: string;
   maxSteps: number;
+  planDays: number;
 };
 
 /** Layer a chat's overrides over the deployment defaults. */
@@ -32,6 +33,7 @@ export function resolveEffective(defaults: SettingsDefaults, settings: ChatSetti
     timezone: settings.timezone ?? defaults.timezone,
     modelSlug: settings.model,
     maxSteps: settings.maxSteps ?? defaults.maxSteps,
+    planDays: settings.planDays ?? defaults.planDays,
   };
 }
 
@@ -50,6 +52,7 @@ export function renderSettings(defaults: SettingsDefaults, settings: ChatSetting
     `• Timezone: ${settings.timezone ?? defaults.timezone ?? "UTC"} — ${tag(!!settings.timezone)}`,
     `• Model: ${settings.model ?? defaults.model} — ${tag(!!settings.model)}`,
     `• Max steps: ${settings.maxSteps ?? defaults.maxSteps} — ${tag(settings.maxSteps !== undefined)}`,
+    `• Plan days: ${settings.planDays ?? defaults.planDays} — ${tag(settings.planDays !== undefined)}`,
     `• System prompt: ${prompt}`,
     "",
     "Change these with /setlocation, /setprompt, or just ask me; /resetsettings to revert.",
@@ -64,7 +67,7 @@ type SettingsToolsDeps = {
   geocodeImpl?: (place: string) => Promise<GeocodeResult | null>;
 };
 
-const SETTING_KEYS = ["systemPrompt", "location", "timezone", "model", "maxSteps"] as const;
+const SETTING_KEYS = ["systemPrompt", "location", "timezone", "model", "maxSteps", "planDays"] as const;
 
 /**
  * Internal agent tools for viewing and changing this chat's settings by natural
@@ -99,9 +102,10 @@ export function createSettingsTools(deps: SettingsToolsDeps): ToolSet {
         timezone: z.string().optional().describe("IANA timezone, e.g. 'America/Vancouver'."),
         model: z.string().optional().describe("Model slug in the provider's namespace, e.g. 'anthropic/claude-sonnet-4.5'."),
         maxSteps: z.number().int().min(1).max(50).optional().describe("Max steps in the tool loop (1-50)."),
+        planDays: z.number().int().min(1).max(14).optional().describe("How many days to plan meals for (1-14)."),
       }),
-      execute: async ({ place, systemPrompt, timezone, model, maxSteps }) => {
-        const patch: ChatSettings = { systemPrompt, timezone, model, maxSteps };
+      execute: async ({ place, systemPrompt, timezone, model, maxSteps, planDays }) => {
+        const patch: ChatSettings = { systemPrompt, timezone, model, maxSteps, planDays };
         if (place !== undefined) {
           let hit: GeocodeResult | null;
           try {

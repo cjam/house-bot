@@ -20,6 +20,8 @@ export type ChatSettings = {
   model?: string;
   /** Max steps in the agentic tool loop. */
   maxSteps?: number;
+  /** How many days to plan meals for. */
+  planDays?: number;
 };
 
 /** The keys a caller may target when clearing overrides. */

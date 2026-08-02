@@ -132,6 +132,11 @@ describe("loadConfig", () => {
     expect(config.webSearch).toBe(false);
   });
 
+  test("defaults planDays to 5 and honors PLAN_DAYS", () => {
+    expect(loadConfig(BASE_ENV).planDays).toBe(5);
+    expect(loadConfig({ ...BASE_ENV, PLAN_DAYS: "7" }).planDays).toBe(7);
+  });
+
   test("MAX_STEPS and WEB_SEARCH override the defaults", () => {
     const config = loadConfig({ ...BASE_ENV, MAX_STEPS: "5", WEB_SEARCH: "true" });
     expect(config.maxSteps).toBe(5);

@@ -19,6 +19,9 @@ import { createTranscriptLogger, type TranscriptLogger } from "./transcript";
 import { plannerAgent, recipeAgent, pickTools } from "./agents";
 import { createRecipeTool } from "./recipe-tool";
 import { createRecallTool } from "./recall";
+import { createPlanStore } from "./plan-draft";
+import { createPlanTools } from "./plan-tools";
+import { renderPlanCard, buildPlanKeyboard, parsePlanCallback } from "./meal-plan-ui";
 
 const REPLY_CHUNK_SIZE = 4000;
 
@@ -31,7 +34,12 @@ const REPLY_CHUNK_SIZE = 4000;
  * "today's meals"). Defaults to the process timezone (the TZ env var); a chat can
  * override it via its settings, passed in as `timeZone`.
  */
-export function buildSystemPrompt(base: string, now: Date = new Date(), timeZone?: string): string {
+export function buildSystemPrompt(
+  base: string,
+  now: Date = new Date(),
+  timeZone?: string,
+  planDays?: number,
+): string {
   const date = new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     year: "numeric",
@@ -40,7 +48,11 @@ export function buildSystemPrompt(base: string, now: Date = new Date(), timeZone
     timeZoneName: "short",
     timeZone,
   }).format(now);
-  return `${base}\n\nToday's date is ${date}.`;
+  const planLine = planDays
+    ? `\n\nWhen planning meals, plan ${planDays} days at a time unless the user asks for a different ` +
+      `range, and use the present_meal_plan tool to show the plan as an interactive card.`
+    : "";
+  return `${base}\n\nToday's date is ${date}.${planLine}`;
 }
 
 export function chunkText(text: string, size: number): string[] {
@@ -118,6 +130,9 @@ export type BotDeps = {
 export function createBot(deps: BotDeps): Bot {
   const bot = new Bot(deps.config.telegramToken);
 
+  // Staged meal-plan draft cards (in-memory; ephemeral until locked in).
+  const planStore = createPlanStore();
+
   bot.use(sequentialize((ctx) => ctx.chat?.id.toString()));
 
   bot.use(async (ctx, next) => {
@@ -171,6 +186,13 @@ export function createBot(deps: BotDeps): Bot {
     const eff = resolveEffective(deps.config, settings);
 
     const weatherTools = createWeatherTool({ defaultLat: eff.lat, defaultLong: eff.long });
+    const planTools = createPlanTools({
+      api: bot.api,
+      chatId: args.chatId,
+      store: planStore,
+      lat: eff.lat,
+      long: eff.long,
+    });
     const scheduleTools =
       deps.store && scheduler
         ? createScheduleTools({
@@ -196,9 +218,9 @@ export function createBot(deps: BotDeps): Bot {
     const result = await deps.ask({
       messages: priorMessages,
       prompt: args.prompt,
-      systemPrompt: buildSystemPrompt(eff.systemPrompt, new Date(), eff.timezone),
+      systemPrompt: buildSystemPrompt(eff.systemPrompt, new Date(), eff.timezone, eff.planDays),
       model: deps.modelFor(eff.modelSlug),
-      tools: { ...deps.tools, ...weatherTools, ...scheduleTools, ...settingsTools, ...recallTools },
+      tools: { ...deps.tools, ...weatherTools, ...planTools, ...scheduleTools, ...settingsTools, ...recallTools },
       maxSteps: eff.maxSteps,
     });
     // Persisting returns the session id these messages belong to; an isolated
@@ -240,8 +262,36 @@ export function createBot(deps: BotDeps): Bot {
     }
   });
 
+  bot.command("plan", async (ctx) => {
+    await ctx.replyWithChatAction("typing");
+    try {
+      await runTurn({
+        chatId: ctx.chat.id,
+        prompt: "Plan our upcoming dinners and show me the interactive plan card.",
+        useSession: true,
+        trigger: "message",
+      });
+    } catch (err) {
+      console.error(
+        `/plan turn failed for chat ${ctx.chat.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+      await ctx.reply(errorReplyFor(err));
+    }
+  });
+
   if (deps.settingsStore) {
     const settingsStore = deps.settingsStore;
+
+    bot.command("setdays", async (ctx) => {
+      const n = Number(ctx.match.trim());
+      if (!Number.isInteger(n) || n < 1 || n > 14) {
+        await ctx.reply("Usage: /setdays <1-14> — how many days to plan meals for.");
+        return;
+      }
+      await settingsStore.update(ctx.chat.id, { planDays: n });
+      await ctx.reply(renderSettings(deps.config, settingsStore.get(ctx.chat.id)));
+    });
 
     bot.command("settings", async (ctx) => {
       await ctx.reply(renderSettings(deps.config, settingsStore.get(ctx.chat.id)));
@@ -317,13 +367,91 @@ export function createBot(deps: BotDeps): Bot {
       );
     });
 
-    bot.on("callback_query:data", async (ctx) => {
-      const parsed = parseCallback(ctx.callbackQuery.data);
+  }
+
+  // Single callback-query dispatcher: meal-plan cards first, then (if scheduling
+  // is wired) the schedule control panel. Registered unconditionally so plan-card
+  // buttons work even in a deployment without the scheduler.
+  bot.on("callback_query:data", async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    const chatId = ctx.chat?.id;
+
+    const plan = parsePlanCallback(data);
+    if (plan) {
+      const draft = planStore.get(plan.id);
+      if (chatId === undefined || !draft || draft.chatId !== chatId) {
+        await ctx.answerCallbackQuery({ text: "This plan is no longer active." });
+        return;
+      }
+      if (draft.committed) {
+        await ctx.answerCallbackQuery({ text: "This plan is already saved." });
+        return;
+      }
+
+      switch (plan.action) {
+        case "shuffle":
+          planStore.shuffle(plan.id, plan.dayIndex!);
+          await ctx.answerCallbackQuery();
+          break;
+        case "skip":
+          planStore.skip(plan.id, plan.dayIndex!);
+          await ctx.answerCallbackQuery({ text: "Skipped." });
+          break;
+        case "unskip":
+          planStore.unskip(plan.id, plan.dayIndex!);
+          await ctx.answerCallbackQuery();
+          break;
+        case "all":
+          planStore.shuffleAll(plan.id);
+          await ctx.answerCallbackQuery({ text: "Shuffled." });
+          break;
+        case "lock": {
+          planStore.commit(plan.id);
+          await ctx.answerCallbackQuery({ text: "Saving to Mealie…" });
+          // Mealie writes live in the agent, so hand the locked picks to a turn.
+          // Note days become plain notes; recipe days name the chosen recipe.
+          const picks = draft.days
+            .map((d) =>
+              d.note ? `- ${d.date}: NOTE: ${d.note}` : `- ${d.date}: ${d.candidates[d.chosen]?.title ?? ""}`,
+            )
+            .join("\n");
+          void runTurn({
+            chatId,
+            prompt:
+              "Save this dinner plan to Mealie — replace the dinner meal-plan entries for exactly " +
+              `these dates:\n${picks}\n` +
+              "For a day marked NOTE, add a note-type meal-plan entry with that text (no recipe). " +
+              "For the others, use find_or_create_recipe for any dish that doesn't have a recipe yet, " +
+              "then replace the week's meal plan for these dates. Do NOT present another plan card; " +
+              "just confirm briefly when done.",
+            useSession: true,
+            trigger: "message",
+          }).catch((err) => {
+            console.error(
+              `Meal-plan lock write failed for chat ${chatId}:`,
+              err instanceof Error ? err.message : err,
+            );
+            void bot.api.sendMessage(chatId, errorReplyFor(err)).catch(() => {});
+          });
+          break;
+        }
+      }
+
+      // Redraw the card in place; a committed draft drops its buttons. Editing
+      // throws if nothing changed or the message is too old — harmless, so ignore.
+      await ctx
+        .editMessageText(renderPlanCard(draft), { reply_markup: buildPlanKeyboard(draft) })
+        .catch(() => {});
+      return;
+    }
+
+    if (deps.store && scheduler) {
+      const store = deps.store;
+      const parsed = parseCallback(data);
       if (!parsed) {
         await ctx.answerCallbackQuery();
         return;
       }
-      const chatId = ctx.chat?.id;
       const schedule = store.get(parsed.id);
       if (chatId === undefined || !schedule || schedule.chatId !== chatId) {
         await ctx.answerCallbackQuery({ text: "That schedule no longer exists." });
@@ -333,22 +461,22 @@ export function createBot(deps: BotDeps): Bot {
       let note: string;
       switch (parsed.action) {
         case "run":
-          void scheduler!.runNow(parsed.id);
+          void scheduler.runNow(parsed.id);
           note = "Running now…";
           break;
         case "pause":
           await store.update(parsed.id, { enabled: false });
-          scheduler!.sync(parsed.id);
+          scheduler.sync(parsed.id);
           note = "Paused.";
           break;
         case "resume":
           await store.update(parsed.id, { enabled: true });
-          scheduler!.sync(parsed.id);
+          scheduler.sync(parsed.id);
           note = "Resumed.";
           break;
         case "del":
           await store.remove(parsed.id);
-          scheduler!.sync(parsed.id);
+          scheduler.sync(parsed.id);
           note = "Deleted.";
           break;
       }
@@ -363,8 +491,11 @@ export function createBot(deps: BotDeps): Bot {
           reply_markup: list.length > 0 ? buildScheduleKeyboard(list) : new InlineKeyboard(),
         })
         .catch(() => {});
-    });
-  }
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+  });
 
   // Concise last-resort handler so an unexpected error logs a one-line message
   // instead of dumping the entire grammY context object to the console.
@@ -453,8 +584,10 @@ async function main() {
   // hiccup here shouldn't stop the bot from starting.
   await bot.api
     .setMyCommands([
+      { command: "plan", description: "Plan meals & show an interactive plan card" },
       { command: "schedules", description: "List & manage scheduled prompts" },
       { command: "settings", description: "Show this chat's settings" },
+      { command: "setdays", description: "Set how many days to plan meals for" },
       { command: "setlocation", description: "Set the household's location" },
       { command: "setprompt", description: "Set a custom system prompt for this chat" },
       { command: "resetsettings", description: "Revert settings to defaults" },

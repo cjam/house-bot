@@ -88,6 +88,7 @@ function baseConfig(overrides: Partial<Config> = {}): Config {
     apiKey: "sk-test",
     model: "anthropic/claude-sonnet-4.5",
     maxSteps: 12,
+    planDays: 5,
     webSearch: false,
     sessionFile: "unused.json",
     sessionIdleMs: 15 * 60_000,

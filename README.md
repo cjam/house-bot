@@ -165,10 +165,12 @@ architectures. (The CI workflow builds the arm64 image under QEMU emulation.)
 - `/start` — health check; confirms the bot is online.
 - `/reset` — clears the current chat's saved session, so the next message starts a fresh
   conversation with the agent.
+- `/plan` — plan the upcoming dinners and post an **interactive plan card** (see
+  [Meal-plan cards](#meal-plan-cards)). You can also just ask (*"plan our dinners this week"*).
 - `/schedules` — list this chat's scheduled prompts with inline buttons to **run now**,
   **pause/resume**, and **delete** each one.
-- `/settings` — show this chat's settings; `/setlocation <place>`, `/setprompt <text>`, and
-  `/resetsettings` change them (see [Per-chat settings](#per-chat-settings)).
+- `/settings` — show this chat's settings; `/setlocation <place>`, `/setprompt <text>`,
+  `/setdays <1-14>`, and `/resetsettings` change them (see [Per-chat settings](#per-chat-settings)).
 - Any other text message is sent to the agent as a new turn (continuing the chat's existing
   conversation), with a "typing…" indicator while it works. Long replies are split into chunks
   under Telegram's 4096-character message cap.
@@ -208,6 +210,7 @@ Each chat can override the deployment defaults for its own conversations. Overri
   and the place's **timezone** is adopted at the same time.
 - **Timezone** — for the injected date and new schedules (set on its own, or via location).
 - **Model** — a model slug for this chat, overriding the default; and **max steps** for the loop.
+- **Plan days** — how many days a meal plan covers by default (`PLAN_DAYS`, default 5).
 
 Settings are **overrides layered over the defaults**, resolved per turn — an unset field just uses
 the `.env` value. As with schedules, there are two ways to change them:
@@ -215,7 +218,38 @@ the `.env` value. As with schedules, there are two ways to change them:
 - **Just ask.** *"We're in Tofino this week — set our location"* or *"use claude-sonnet here"* →
   the agent's settings tools update this chat and confirm.
 - **Slash commands.** `/settings` shows the current values (marking each custom vs. default);
-  `/setlocation <place>`, `/setprompt <text>`, and `/resetsettings` change or revert them.
+  `/setlocation <place>`, `/setprompt <text>`, `/setdays <1-14>`, and `/resetsettings` change or
+  revert them.
+
+## Meal-plan cards
+
+Instead of a wall of text, the planner can present the week as an **interactive card** — one row
+per day showing the weather (emoji + high/low, with a ⚠️ on smoky days) and the chosen recipe, plus
+inline buttons. Ask *"plan our dinners"* (or run `/plan`) and the agent picks recipes, attaches a
+couple of alternates per day, and posts the card:
+
+```
+🍽️ Dinner plan
+
+Mon, Aug 3   ☀️ 24°/13°   Sheet-Pan Chicken Fajitas
+Tue, Aug 4   ⛅ 21°/12°   Thai Green Curry
+Wed, Aug 5   🌧️ 18°/11°   📝 Pizza night
+
+Tap 🔀 to swap a day or 🚫 to skip it, then ✅ Lock it in.
+```
+
+- **🔀 per day / Shuffle all** — cycle a day (or every day) through its alternate recipes. This is
+  instant: the card edits in place, with no model call and nothing written to Mealie yet.
+- **🚫 skip a day** — mark a day as a note instead of a recipe (eating out, leftovers, a busy
+  night). The button sets a generic "Eating out"; for a specific note just tell the bot (*"Friday is
+  pizza night"*) and it sets that day's note. A skipped day keeps its weather and offers ↩️ to
+  restore the recipe.
+- **✅ Lock it in** — commits the plan to Mealie: chosen recipes become meal-plan entries (creating
+  any missing recipe via the recipe sub-agent), and skipped days become plain note entries. Then the
+  buttons drop and the card is marked *saved*.
+
+The number of days comes from the chat's **Plan days** setting (default `PLAN_DAYS`, 5). Drafts are
+held in memory until locked in, so a card's buttons stop working after a restart — just ask again.
 
 Overrides persist to `SETTINGS_FILE` (default `data/settings.json`), kept **separate** from the
 session and schedule files on purpose: settings are cold (rarely written), so folding them into the

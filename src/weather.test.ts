@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolSet } from "ai";
-import { createWeatherTool } from "./weather";
+import { createWeatherTool, emojiForCode, forecastByDate } from "./weather";
 
 // Open-Meteo returns column-oriented arrays under `daily` / `hourly`.
 const FORECAST = {
@@ -70,6 +70,7 @@ describe("get_forecast", () => {
     expect(cap.urls.some((u) => u.includes("air-quality"))).toBe(true);
     expect(res.forecast[0]).toEqual({
       date: "2026-07-28",
+      code: 2,
       summary: "Partly cloudy", // WMO code 2
       highC: 22,
       lowC: 12,
@@ -129,5 +130,42 @@ describe("get_forecast", () => {
     const res = await call(tools(boom), {});
     expect(res.ok).toBe(false);
     expect(res.error).toContain("network down");
+  });
+});
+
+describe("emojiForCode", () => {
+  test("maps representative WMO codes to emoji", () => {
+    expect(emojiForCode(0)).toBe("☀️");
+    expect(emojiForCode(2)).toBe("⛅");
+    expect(emojiForCode(3)).toBe("☁️");
+    expect(emojiForCode(63)).toBe("🌧️"); // rain
+    expect(emojiForCode(80)).toBe("🌧️"); // rain showers
+    expect(emojiForCode(73)).toBe("🌨️"); // snow
+    expect(emojiForCode(95)).toBe("⛈️"); // thunderstorm
+  });
+
+  test("returns a placeholder for unknown/absent codes", () => {
+    expect(emojiForCode(null)).toBe("❓");
+    expect(emojiForCode(undefined)).toBe("❓");
+  });
+});
+
+describe("forecastByDate", () => {
+  test("returns a per-local-date map of forecast days", async () => {
+    const cap: Capture = { urls: [] };
+    const byDate = await forecastByDate({ lat: 48.5, long: -123.4, days: 2, fetchImpl: routingFetch(cap) });
+    expect(byDate.get("2026-07-28")?.code).toBe(2);
+    expect(byDate.get("2026-07-29")?.highC).toBe(18);
+  });
+
+  test("degrades to an empty map when the forecast call fails", async () => {
+    const cap: Capture = { urls: [] };
+    const byDate = await forecastByDate({
+      lat: 48.5,
+      long: -123.4,
+      days: 2,
+      fetchImpl: routingFetch(cap, { ok: false }),
+    });
+    expect(byDate.size).toBe(0);
   });
 });
