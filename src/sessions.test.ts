@@ -96,6 +96,19 @@ describe("createSessionStore", () => {
     await store.set(1, history("session-a"), 1000);
     expect(existsSync(`${file}.tmp`)).toBe(false);
     const contents = JSON.parse(readFileSync(file, "utf8"));
-    expect(contents).toEqual({ "1": { messages: history("session-a"), lastMessageAt: 1000 } });
+    expect(contents["1"].messages).toEqual(history("session-a"));
+    expect(contents["1"].lastMessageAt).toBe(1000);
+    expect(typeof contents["1"].sessionId).toBe("string");
+  });
+
+  test("keeps the session id across active turns but mints a new one after an idle gap", async () => {
+    const store = createSessionStore(tempFile(), IDLE_MS);
+    await store.load();
+    const first = await store.set(1, history("a"), 0);
+    const same = await store.set(1, history("b"), IDLE_MS); // within the window
+    const next = await store.set(1, history("c"), IDLE_MS + IDLE_MS + 1); // after a gap
+    expect(same).toBe(first);
+    expect(next).not.toBe(first);
+    expect(next).toMatch(/^\d{8}-\d{6}-[0-9a-f]{4}$/);
   });
 });

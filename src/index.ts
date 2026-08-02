@@ -3,7 +3,7 @@ import { run, sequentialize } from "@grammyjs/runner";
 import telegramifyMarkdown from "telegramify-markdown";
 import type { LanguageModel, ToolSet } from "ai";
 import { loadConfig, type Config } from "./config";
-import { createSessionStore, type SessionStore } from "./sessions";
+import { createSessionStore, newSessionId, type SessionStore } from "./sessions";
 import { ask as realAsk, type AskParams, type AskResult } from "./agent";
 import { createMcpTools } from "./mcp";
 import { resolveProvider } from "./provider";
@@ -192,13 +192,18 @@ export function createBot(deps: BotDeps): Bot {
       tools: { ...deps.tools, ...weatherTools, ...scheduleTools, ...settingsTools },
       maxSteps: eff.maxSteps,
     });
-    if (args.useSession) await deps.sessionStore.set(args.chatId, result.messages);
+    // Persisting returns the session id these messages belong to; an isolated
+    // (fresh scheduled) run has no stored session, so give it a standalone id.
+    const sessionId = args.useSession
+      ? await deps.sessionStore.set(args.chatId, result.messages)
+      : newSessionId();
     await sendReply(bot.api, args.chatId, result.text);
 
     // Append the turn to the transcript log (no-op when disabled; never throws).
     await deps.transcript?.log({
       ts: new Date().toISOString(),
       chatId: args.chatId,
+      sessionId,
       trigger: args.trigger,
       fresh: priorMessages.length === 0,
       priorMessages: priorMessages.length,

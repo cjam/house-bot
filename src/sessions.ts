@@ -1,16 +1,31 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { ModelMessage } from "ai";
 
 export type SessionStore = {
   load(): Promise<void>;
   /** Returns the chat's message history, or undefined if unknown or idle-expired. */
   get(chatId: number, now?: number): ModelMessage[] | undefined;
-  set(chatId: number, messages: ModelMessage[], now?: number): Promise<void>;
+  /** Persists the turn; returns the session id it belongs to (new after an idle gap). */
+  set(chatId: number, messages: ModelMessage[], now?: number): Promise<string>;
   clear(chatId: number): Promise<void>;
 };
 
-type SessionRecord = { messages: ModelMessage[]; lastMessageAt: number };
+/**
+ * A session id that embeds its UTC start time (for readable transcript filenames
+ * like `20260802-183000-a1b2.jsonl`) plus a short random suffix for uniqueness.
+ */
+export function newSessionId(now: number = Date.now()): string {
+  const d = new Date(now);
+  const p = (n: number) => String(n).padStart(2, "0");
+  const stamp =
+    `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}` +
+    `-${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}`;
+  return `${stamp}-${randomUUID().slice(0, 4)}`;
+}
+
+type SessionRecord = { sessionId: string; messages: ModelMessage[]; lastMessageAt: number };
 
 /**
  * Persists chat_id -> conversation history (the AI SDK is stateless, so we own
@@ -53,7 +68,12 @@ export function createSessionStore(filePath: string, idleMs: number): SessionSto
           value !== null &&
           Array.isArray((value as SessionRecord).messages)
         ) {
-          sessions.set(Number(chatId), value as SessionRecord);
+          const record = value as SessionRecord;
+          // Backfill an id for records written before sessions were ided.
+          if (typeof record.sessionId !== "string") {
+            record.sessionId = newSessionId(record.lastMessageAt);
+          }
+          sessions.set(Number(chatId), record);
         }
       }
     },
@@ -66,8 +86,14 @@ export function createSessionStore(filePath: string, idleMs: number): SessionSto
     },
 
     async set(chatId, messages, now = Date.now()) {
-      sessions.set(chatId, { messages, lastMessageAt: now });
+      // Keep the current session id while the chat is active; mint a new one when
+      // the previous turn was over idleMs ago (a fresh session) or there is none.
+      const existing = sessions.get(chatId);
+      const continuing = existing !== undefined && now - existing.lastMessageAt <= idleMs;
+      const sessionId = continuing ? existing.sessionId : newSessionId(now);
+      sessions.set(chatId, { sessionId, messages, lastMessageAt: now });
       await persist();
+      return sessionId;
     },
 
     async clear(chatId) {
