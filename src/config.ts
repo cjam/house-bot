@@ -123,6 +123,8 @@ export type Config = {
   scheduleFile: string;
   /** Where per-chat settings overrides are persisted. */
   settingsFile: string;
+  /** Where the last-announced release version is persisted (for deploy notes). */
+  deployStateFile: string;
   /** Process timezone (from TZ), stamped on new schedules and used for display. */
   timezone?: string;
   /** Default coordinates for the weather tool (the household's home). */
@@ -150,6 +152,7 @@ export function loadConfig(env: Env = process.env): Config {
     sessionIdleMs: Number(env.SESSION_IDLE_MINUTES || 15) * 60_000,
     scheduleFile: env.SCHEDULE_FILE || "./data/schedules.json",
     settingsFile: env.SETTINGS_FILE || "./data/settings.json",
+    deployStateFile: env.DEPLOY_STATE_FILE || "./data/deploy.json",
     timezone: env.TZ?.trim() || undefined,
     // Default to Victoria, B.C.; the weather tool also accepts per-call coords.
     homeLat: Number(env.HOME_LAT || 48.496),

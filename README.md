@@ -125,6 +125,8 @@ named volume in `docker-compose.yml`:
 - `data/sessions.json` — the chat-id → conversation-history map.
 - `data/schedules.json` — scheduled prompts (see [Scheduled prompts](#scheduled-prompts)).
 - `data/settings.json` — per-chat settings overrides (see [Per-chat settings](#per-chat-settings)).
+- `data/deploy.json` — the last release version announced on deploy (see [Release notes on
+  deploy](#release-notes-on-deploy)).
 - `data/logs/<chatId>.jsonl` — optional transcript logs, when `TRANSCRIPT_DIR` is set
   (see [Transcript log](#transcript-log)).
 
@@ -254,6 +256,34 @@ held in memory until locked in, so a card's buttons stop working after a restart
 Overrides persist to `SETTINGS_FILE` (default `data/settings.json`), kept **separate** from the
 session and schedule files on purpose: settings are cold (rarely written), so folding them into the
 per-message session record would rewrite them on every message.
+
+## Release notes on deploy
+
+When a new build starts up, the bot posts a short "I've been updated" message to each allowed chat —
+the release title, a few highlight bullets, and (collapsed by default) a details section using
+Telegram's expandable blockquote. It fires **once per version bump**: the last-announced version is
+stored in `data/deploy.json` (in the persisted volume), so an ordinary restart or crash-loop stays
+quiet, and a fresh install announces only the latest release rather than the whole history.
+
+Release notes are authored in [`src/releases.ts`](src/releases.ts) — newest first. To announce a
+deploy, add an entry at the top with a new `version`, a `title`, a few short `highlights`, and
+optional longer `details`:
+
+```ts
+export const RELEASES: Release[] = [
+  {
+    version: "0.3.0",
+    title: "Family calendar",
+    highlights: ["Meal planning now accounts for busy nights"],
+    details: "Longer prose here shows in the collapsible section.",
+  },
+  // …older releases below
+];
+```
+
+The `version` is just a unique, ordered id (semver here) — it only needs to differ from the previous
+top entry. The message is sent as MarkdownV2 with a plain-text fallback if Telegram rejects the
+formatting, and the whole step is best-effort: a hiccup here never blocks startup.
 
 ## Transcript log
 

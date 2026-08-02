@@ -137,6 +137,11 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...BASE_ENV, PLAN_DAYS: "7" }).planDays).toBe(7);
   });
 
+  test("defaults deployStateFile and honors DEPLOY_STATE_FILE", () => {
+    expect(loadConfig(BASE_ENV).deployStateFile).toBe("./data/deploy.json");
+    expect(loadConfig({ ...BASE_ENV, DEPLOY_STATE_FILE: "/tmp/d.json" }).deployStateFile).toBe("/tmp/d.json");
+  });
+
   test("MAX_STEPS and WEB_SEARCH override the defaults", () => {
     const config = loadConfig({ ...BASE_ENV, MAX_STEPS: "5", WEB_SEARCH: "true" });
     expect(config.maxSteps).toBe(5);

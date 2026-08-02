@@ -22,6 +22,9 @@ import { createRecallTool } from "./recall";
 import { createPlanStore } from "./plan-draft";
 import { createPlanTools } from "./plan-tools";
 import { renderPlanCard, buildPlanKeyboard, parsePlanCallback } from "./meal-plan-ui";
+import { createDeployStore } from "./deploy-state";
+import { announceUpdates } from "./release-notes";
+import { RELEASES } from "./releases";
 
 const REPLY_CHUNK_SIZE = 4000;
 
@@ -597,6 +600,36 @@ async function main() {
 
   const runner = run(bot);
   console.log("House bot running (long polling).");
+
+  // Deploy notes: if this build's top release version is newer than what we last
+  // announced (persisted in the data volume), post the release notes to each
+  // allowed chat. Best-effort — never let it hold up or crash startup.
+  try {
+    const deployStore = createDeployStore(config.deployStateFile);
+    await deployStore.load();
+    const announced = await announceUpdates({
+      releases: RELEASES,
+      lastAnnounced: deployStore.get(),
+      chatIds: config.allowedChatIds,
+      send: async (chatId, markdownV2, plain) => {
+        try {
+          await bot.api.sendMessage(chatId, markdownV2, { parse_mode: "MarkdownV2" });
+        } catch (err) {
+          console.error(
+            `Release-notes MarkdownV2 rejected for chat ${chatId}, sending plain:`,
+            err instanceof Error ? err.message : err,
+          );
+          await bot.api.sendMessage(chatId, plain).catch(() => {});
+        }
+      },
+    });
+    if (announced) {
+      await deployStore.set(announced);
+      console.log(`Announced release ${announced} to ${config.allowedChatIds.size} chat(s).`);
+    }
+  } catch (err) {
+    console.error("Release-notes announcement failed:", err instanceof Error ? err.message : err);
+  }
 
   const stop = () => {
     console.log("Shutting down...");
