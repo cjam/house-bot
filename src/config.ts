@@ -135,6 +135,8 @@ export type Config = {
   /** Default coordinates for the weather tool (the household's home). */
   homeLat: number;
   homeLong: number;
+  /** Directory for per-chat JSONL transcript logs; undefined disables logging. */
+  transcriptDir?: string;
 };
 
 export function loadConfig(env: Env = process.env): Config {
@@ -158,5 +160,6 @@ export function loadConfig(env: Env = process.env): Config {
     // Default to Victoria, B.C.; the weather tool also accepts per-call coords.
     homeLat: Number(env.HOME_LAT || 48.496),
     homeLong: Number(env.HOME_LONG || -123.393),
+    transcriptDir: env.TRANSCRIPT_DIR?.trim() || undefined,
   };
 }

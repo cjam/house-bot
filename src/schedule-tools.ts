@@ -1,6 +1,6 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
-import type { ScheduleStore, Schedule } from "./schedules";
+import type { ScheduleStore, Schedule, ScheduleUpdate } from "./schedules";
 import { type Scheduler, validateCron, validateOnce, nextRun } from "./scheduler";
 
 /** Compact view of a schedule for the model, including its next fire time. */
@@ -53,10 +53,12 @@ export function createScheduleTools(deps: ScheduleToolsDeps): ToolSet {
 
     create_schedule: tool({
       description:
-        "Create a scheduled prompt for this chat. The prompt runs as if the user had sent " +
-        "it, and the reply is delivered to this chat. Use kind='recurring' with a cron " +
-        'expression for repeating tasks ("every Sunday at 5pm, plan next week\'s meals"), ' +
-        "or kind='once' with a datetime for a one-time reminder that auto-deletes after it fires.",
+        "Create a NEW scheduled prompt for this chat. First call list_schedules — if one that " +
+        "serves the same purpose already exists, use update_schedule to change it instead of " +
+        "adding a duplicate. The prompt runs as if the user had sent it, and the reply is " +
+        "delivered to this chat. Use kind='recurring' with a cron expression for repeating tasks " +
+        '("every Sunday at 5pm, plan next week\'s meals"), or kind=\'once\' with a datetime for a ' +
+        "one-time reminder that auto-deletes after it fires.",
       inputSchema: z.object({
         kind: z
           .enum(["recurring", "once"])
@@ -104,6 +106,54 @@ export function createScheduleTools(deps: ScheduleToolsDeps): ToolSet {
         const schedule = await store.add({ kind, chatId, cron, prompt, sessionMode, timezone: tz });
         scheduler.sync(schedule.id);
         return { ok: true, schedule: summarize(schedule) };
+      },
+    }),
+
+    update_schedule: tool({
+      description:
+        "Change an EXISTING schedule (by id) in place — its time (cron/runAt), prompt, session " +
+        "mode, timezone, or enabled state. Prefer this over create_schedule whenever the user " +
+        "wants to change a schedule that already exists (call list_schedules first to get the id). " +
+        "Only the fields you pass change.",
+      inputSchema: z.object({
+        id: z.string(),
+        cron: z.string().optional().describe("New cron expression (recurring schedules only)."),
+        runAt: z.string().optional().describe("New ISO-8601 datetime (one-off schedules only)."),
+        prompt: z.string().optional().describe("Replace the prompt that runs."),
+        sessionMode: z
+          .enum(["fresh", "continue"])
+          .optional()
+          .describe("'fresh' runs isolated; 'continue' resumes this chat's conversation."),
+        enabled: z.boolean().optional().describe("Enable or pause the schedule."),
+        timezone: z.string().optional().describe("IANA timezone for the trigger."),
+      }),
+      execute: async ({ id, cron, runAt, prompt, sessionMode, enabled, timezone }) => {
+        const schedule = owned(id);
+        if (!schedule) return { ok: false, error: "No such schedule for this chat." };
+        const tz = timezone ?? schedule.timezone;
+        const patch: ScheduleUpdate = { prompt, sessionMode, enabled, timezone };
+        if (cron !== undefined) {
+          if (schedule.kind !== "recurring") {
+            return { ok: false, error: "cron only applies to recurring schedules." };
+          }
+          const error = validateCron(cron, tz);
+          if (error) return { ok: false, error: `Invalid cron expression: ${error}` };
+          patch.cron = cron;
+        }
+        if (runAt !== undefined) {
+          if (schedule.kind !== "once") {
+            return { ok: false, error: "runAt only applies to one-off schedules." };
+          }
+          const error = validateOnce(runAt, tz);
+          if (error) return { ok: false, error };
+          patch.runAt = runAt;
+        }
+        if (!Object.values(patch).some((v) => v !== undefined)) {
+          return { ok: false, error: "Nothing to update." };
+        }
+        const updated = await store.update(id, patch);
+        scheduler.sync(id);
+        return { ok: true, schedule: updated ? summarize(updated) : null };
       },
     }),
 

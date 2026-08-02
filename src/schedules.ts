@@ -50,7 +50,12 @@ export type ScheduleInput = {
 /** The mutable fields a caller may patch — never the kind or its trigger. */
 export type ScheduleUpdate = Partial<
   Pick<Schedule, "enabled" | "prompt" | "sessionMode" | "timezone" | "lastRunAt">
->;
+> & {
+  /** New cron expression (recurring schedules only). */
+  cron?: string;
+  /** New one-off datetime (once schedules only). */
+  runAt?: string;
+};
 
 export type ScheduleStore = {
   load(): Promise<void>;
@@ -142,10 +147,15 @@ export function createScheduleStore(filePath: string): ScheduleStore {
     async update(id, patch) {
       const current = schedules.get(id);
       if (!current) return undefined;
-      const updated = { ...current, ...patch } as Schedule;
-      schedules.set(id, updated);
+      // Skip undefined values so a partial patch (e.g. only { prompt }) never
+      // wipes the fields the caller left out.
+      const updated = { ...current } as Record<string, unknown>;
+      for (const [key, value] of Object.entries(patch)) {
+        if (value !== undefined) updated[key] = value;
+      }
+      schedules.set(id, updated as Schedule);
       await persist();
-      return updated;
+      return updated as Schedule;
     },
 
     async remove(id) {

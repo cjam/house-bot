@@ -92,6 +92,49 @@ describe("create_schedule", () => {
   });
 });
 
+describe("update_schedule", () => {
+  test("updates fields in place and syncs, without wiping untouched fields", async () => {
+    const { store, tools, synced, chatId } = await setup();
+    const s = await store.add({ kind: "recurring", chatId, cron: "0 17 * * 0", prompt: "old" });
+    const res = await call(tools, "update_schedule", {
+      id: s.id,
+      cron: "0 7 * * 6",
+      sessionMode: "continue",
+    });
+    expect(res.ok).toBe(true);
+    const updated = store.get(s.id)!;
+    expect(updated.kind === "recurring" && updated.cron).toBe("0 7 * * 6");
+    expect(updated.sessionMode).toBe("continue");
+    expect(updated.prompt).toBe("old"); // untouched field preserved
+    expect(synced).toContain(s.id);
+  });
+
+  test("rejects an invalid cron and leaves the schedule unchanged", async () => {
+    const { store, tools, chatId } = await setup();
+    const s = await store.add({ kind: "recurring", chatId, cron: "0 17 * * 0", prompt: "keep" });
+    const res = await call(tools, "update_schedule", { id: s.id, cron: "nonsense" });
+    expect(res.ok).toBe(false);
+    const after = store.get(s.id)!;
+    expect(after.kind === "recurring" && after.cron).toBe("0 17 * * 0");
+  });
+
+  test("rejects cron on a one-off schedule", async () => {
+    const { store, tools, chatId } = await setup();
+    const s = await store.add({ kind: "once", chatId, runAt: "2099-01-01T09:00:00", prompt: "x" });
+    const res = await call(tools, "update_schedule", { id: s.id, cron: "0 0 * * *" });
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain("recurring");
+  });
+
+  test("refuses a schedule owned by another chat", async () => {
+    const { store, tools } = await setup(100);
+    const other = await store.add({ kind: "recurring", chatId: 200, cron: "0 0 * * *", prompt: "theirs" });
+    const res = await call(tools, "update_schedule", { id: other.id, prompt: "hijack" });
+    expect(res.ok).toBe(false);
+    expect(store.get(other.id)!.prompt).toBe("theirs");
+  });
+});
+
 describe("list_schedules", () => {
   test("returns only this chat's schedules", async () => {
     const { store, tools, chatId } = await setup();

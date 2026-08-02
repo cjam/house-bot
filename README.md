@@ -125,6 +125,8 @@ named volume in `docker-compose.yml`:
 - `data/sessions.json` — the chat-id → conversation-history map.
 - `data/schedules.json` — scheduled prompts (see [Scheduled prompts](#scheduled-prompts)).
 - `data/settings.json` — per-chat settings overrides (see [Per-chat settings](#per-chat-settings)).
+- `data/logs/<chatId>.jsonl` — optional transcript logs, when `TRANSCRIPT_DIR` is set
+  (see [Transcript log](#transcript-log)).
 
 **This mount is required for anything to survive a restart.** Without a volume on `/app/data`,
 recreating the container starts every chat fresh and drops every schedule. The bundled compose
@@ -177,10 +179,12 @@ The bot can run a prompt on a schedule — recurring or one-time — and deliver
 e.g. a weekly "start planning next week's meals" nudge or a one-off "remind me to defrost the roast
 tomorrow at 4pm". There are two ways to manage schedules, and they operate on the same list:
 
-- **Just ask, in plain language.** The agent has tools to create, list, pause, and delete
+- **Just ask, in plain language.** The agent has tools to create, list, update, pause, and delete
   schedules for the current chat: *"every Sunday at 5pm, start planning next week's meal plan"* or
   *"remind me tomorrow at 4pm to defrost the roast"* → it fills in the cron expression or datetime
-  and confirms. Times use your `TZ` (below) unless you name another.
+  and confirms. Times use your `TZ` (below) unless you name another. When you ask to change an
+  existing schedule (its time, prompt, or mode), it edits that one in place rather than adding a
+  duplicate — *"move the meal-plan schedule to 8am and have it continue our conversation."*
 - **`/schedules` command.** A live panel listing this chat's schedules with inline buttons to run,
   pause/resume, or delete each — handy when you'd rather tap than type.
 
@@ -216,6 +220,24 @@ the `.env` value. As with schedules, there are two ways to change them:
 Overrides persist to `SETTINGS_FILE` (default `data/settings.json`), kept **separate** from the
 session and schedule files on purpose: settings are cold (rarely written), so folding them into the
 per-message session record would rewrite them on every message.
+
+## Transcript log
+
+Set `TRANSCRIPT_DIR` (e.g. `./data/logs`) to record an **append-only, per-chat transcript** for
+analysis — one file per chat at `<dir>/<chatId>.jsonl`, one JSON object per turn:
+
+```json
+{ "ts": "…", "chatId": -100…, "trigger": "message", "fresh": false, "priorMessages": 8,
+  "prompt": "…", "reply": "…", "tools": [{ "name": "get_forecast", "args": {…} }],
+  "model": "…", "usage": {…}, "steps": 3, "ms": 2140 }
+```
+
+It's **opt-in** (unset = off) and distinct from the live `sessions.json`, which only holds each
+chat's *current* session and is overwritten every turn. The log is the durable history: it captures
+which tools the model actually calls, token usage and latency per turn, the prompt→reply pairs for
+tuning the system prompt, and the `fresh` vs. resumed flag — handy for spotting when a chat is
+unexpectedly losing its context. It grows unbounded (append-only), so prune or rotate it yourself if
+it gets large. Logging failures are swallowed — they never fail a turn.
 
 ## Adding more MCP servers
 
@@ -254,6 +276,9 @@ startup log will tell you if a server failed to connect.
 - Per-chat settings persist to `data/settings.json` (same atomic write), keyed by chat id, and are
   resolved as overrides over the `.env` defaults on every turn. The settings tools and `/set*`
   commands are bound to the current chat, so one chat can't read or change another's.
+- With `TRANSCRIPT_DIR` set, full prompt→reply transcripts are written to `data/logs/<chatId>.jsonl`
+  — household conversation content at rest. It's opt-in and stays on your own box; leave it unset if
+  you'd rather not persist message text beyond the live session.
 - The allowlist middleware silently drops updates from any chat not in `ALLOWED_CHAT_IDS` — no
   reply, no log noise from randos finding the bot.
 - The agent can only call the tools it's handed: your configured MCP tools, the built-in weather,

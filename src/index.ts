@@ -15,6 +15,7 @@ import { createWeatherTool } from "./weather";
 import { createSettingsStore, type SettingsStore } from "./settings";
 import { createSettingsTools, resolveEffective, renderSettings } from "./settings-tools";
 import { geocode } from "./geocode";
+import { createTranscriptLogger, type TranscriptLogger } from "./transcript";
 
 const REPLY_CHUNK_SIZE = 4000;
 
@@ -107,6 +108,8 @@ export type BotDeps = {
    * (which needs the bot's turn runner) stays inside `createBot`.
    */
   makeScheduler?: (onFire: (schedule: Schedule) => Promise<void>) => Scheduler;
+  /** Optional per-chat transcript logger; omitted (or no-op) when disabled. */
+  transcript?: TranscriptLogger;
 };
 
 export function createBot(deps: BotDeps): Bot {
@@ -149,8 +152,18 @@ export function createBot(deps: BotDeps): Bot {
     chatId: number;
     prompt: string;
     useSession: boolean;
+    trigger: "message" | "schedule";
   }): Promise<void> {
     const priorMessages = args.useSession ? (deps.sessionStore.get(args.chatId) ?? []) : [];
+    // Operational breadcrumb: shows whether a chat's history is actually being
+    // resumed turn-to-turn (vs. silently starting fresh from idle expiry or a
+    // wiped/unmounted store). Watch this in the bot logs when context goes missing.
+    if (args.useSession) {
+      console.log(
+        `Turn for chat ${args.chatId}: ${priorMessages.length} prior message(s) — ` +
+          `${priorMessages.length > 0 ? "resumed" : "fresh"} session.`,
+      );
+    }
     const settings = deps.settingsStore?.get(args.chatId) ?? {};
     const eff = resolveEffective(deps.config, settings);
 
@@ -168,6 +181,7 @@ export function createBot(deps: BotDeps): Bot {
       ? createSettingsTools({ store: deps.settingsStore, chatId: args.chatId, defaults: deps.config })
       : {};
 
+    const startedAt = Date.now();
     const result = await deps.ask({
       messages: priorMessages,
       prompt: args.prompt,
@@ -178,13 +192,29 @@ export function createBot(deps: BotDeps): Bot {
     });
     if (args.useSession) await deps.sessionStore.set(args.chatId, result.messages);
     await sendReply(bot.api, args.chatId, result.text);
+
+    // Append the turn to the transcript log (no-op when disabled; never throws).
+    await deps.transcript?.log({
+      ts: new Date().toISOString(),
+      chatId: args.chatId,
+      trigger: args.trigger,
+      fresh: priorMessages.length === 0,
+      priorMessages: priorMessages.length,
+      prompt: args.prompt,
+      reply: result.text,
+      tools: result.toolCalls ?? [],
+      model: eff.modelSlug ?? deps.config.model,
+      usage: result.usage,
+      steps: result.steps,
+      ms: Date.now() - startedAt,
+    });
   }
 
   bot.on("message:text", async (ctx) => {
     const chatId = ctx.chat.id;
     await ctx.replyWithChatAction("typing");
     try {
-      await runTurn({ chatId, prompt: ctx.message.text, useSession: true });
+      await runTurn({ chatId, prompt: ctx.message.text, useSession: true, trigger: "message" });
     } catch (err) {
       console.error(
         `Agent turn failed for chat ${chatId}:`,
@@ -251,6 +281,7 @@ export function createBot(deps: BotDeps): Bot {
           chatId: schedule.chatId,
           prompt: schedule.prompt,
           useSession: schedule.sessionMode === "continue",
+          trigger: "schedule",
         });
       } catch (err) {
         console.error(
@@ -343,6 +374,8 @@ async function main() {
   const settingsStore = createSettingsStore(config.settingsFile);
   await settingsStore.load();
 
+  const transcript = createTranscriptLogger(config.transcriptDir);
+
   const { modelFor, webSearchTool } = resolveProvider(config);
 
   console.log("Connecting MCP servers...");
@@ -358,7 +391,8 @@ async function main() {
     ...(webSearchTool ? { web_search: webSearchTool } : {}),
   };
   console.log(
-    `Model: ${config.provider}/${config.model}; web search ${config.webSearch ? "on" : "off"}.`,
+    `Model: ${config.provider}/${config.model}; web search ${config.webSearch ? "on" : "off"}; ` +
+      `transcript log ${config.transcriptDir ? `→ ${config.transcriptDir}` : "off"}.`,
   );
 
   let scheduler: Scheduler | undefined;
@@ -369,6 +403,7 @@ async function main() {
     modelFor,
     tools,
     settingsStore,
+    transcript,
     store: scheduleStore,
     makeScheduler: (onFire) => {
       scheduler = createScheduler({ store: scheduleStore, onFire, log: (line) => console.log(line) });
