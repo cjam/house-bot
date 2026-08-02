@@ -16,6 +16,7 @@ import { createSettingsStore, type SettingsStore } from "./settings";
 import { createSettingsTools, resolveEffective, renderSettings } from "./settings-tools";
 import { geocode } from "./geocode";
 import { createTranscriptLogger, type TranscriptLogger } from "./transcript";
+import { plannerAgent, pickTools } from "./agents";
 
 const REPLY_CHUNK_SIZE = 4000;
 
@@ -384,10 +385,19 @@ async function main() {
     console.log(line);
   }
 
-  // Base tools shared across chats. The weather, schedule, and settings tools are
-  // built per turn (they depend on the chat's location/id), so they're not here.
+  // Scope the planner to the Mealie tools its task needs (not all ~130) — a
+  // smaller, relevant tool surface makes the model's tool selection far more
+  // reliable. The weather, schedule, and settings tools are built per turn (they
+  // depend on the chat's location/id), so they're not here.
+  const { tools: plannerMcpTools, missing } = pickTools(mcp.tools, plannerAgent.mcpTools);
+  if (missing.length > 0) {
+    console.log(`Planner: ${missing.length} scoped tool(s) not found on the server: ${missing.join(", ")}`);
+  }
+  console.log(
+    `Planner scoped to ${Object.keys(plannerMcpTools).length} Mealie tools (of ${Object.keys(mcp.tools).length}).`,
+  );
   const tools: ToolSet = {
-    ...mcp.tools,
+    ...plannerMcpTools,
     ...(webSearchTool ? { web_search: webSearchTool } : {}),
   };
   console.log(
