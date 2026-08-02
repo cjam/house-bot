@@ -18,6 +18,7 @@ import { geocode } from "./geocode";
 import { createTranscriptLogger, type TranscriptLogger } from "./transcript";
 import { plannerAgent, recipeAgent, pickTools } from "./agents";
 import { createRecipeTool } from "./recipe-tool";
+import { createRecallTool } from "./recall";
 
 const REPLY_CHUNK_SIZE = 4000;
 
@@ -182,6 +183,14 @@ export function createBot(deps: BotDeps): Bot {
     const settingsTools = deps.settingsStore
       ? createSettingsTools({ store: deps.settingsStore, chatId: args.chatId, defaults: deps.config })
       : {};
+    // Recall over past sessions, when transcript logging (its data source) is on.
+    const recallTools = deps.config.transcriptDir
+      ? createRecallTool({
+          chatId: args.chatId,
+          dir: deps.config.transcriptDir,
+          currentSessionId: args.useSession ? deps.sessionStore.sessionId(args.chatId) : undefined,
+        })
+      : {};
 
     const startedAt = Date.now();
     const result = await deps.ask({
@@ -189,7 +198,7 @@ export function createBot(deps: BotDeps): Bot {
       prompt: args.prompt,
       systemPrompt: buildSystemPrompt(eff.systemPrompt, new Date(), eff.timezone),
       model: deps.modelFor(eff.modelSlug),
-      tools: { ...deps.tools, ...weatherTools, ...scheduleTools, ...settingsTools },
+      tools: { ...deps.tools, ...weatherTools, ...scheduleTools, ...settingsTools, ...recallTools },
       maxSteps: eff.maxSteps,
     });
     // Persisting returns the session id these messages belong to; an isolated

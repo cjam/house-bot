@@ -7,6 +7,8 @@ export type SessionStore = {
   load(): Promise<void>;
   /** Returns the chat's message history, or undefined if unknown or idle-expired. */
   get(chatId: number, now?: number): ModelMessage[] | undefined;
+  /** The live session's id, or undefined if none or idle-expired. */
+  sessionId(chatId: number, now?: number): string | undefined;
   /** Persists the turn; returns the session id it belongs to (new after an idle gap). */
   set(chatId: number, messages: ModelMessage[], now?: number): Promise<string>;
   clear(chatId: number): Promise<void>;
@@ -83,6 +85,13 @@ export function createSessionStore(filePath: string, idleMs: number): SessionSto
       if (!record) return undefined;
       if (now - record.lastMessageAt > idleMs) return undefined;
       return record.messages;
+    },
+
+    sessionId(chatId, now = Date.now()) {
+      const record = sessions.get(chatId);
+      if (!record) return undefined;
+      if (now - record.lastMessageAt > idleMs) return undefined;
+      return record.sessionId;
     },
 
     async set(chatId, messages, now = Date.now()) {

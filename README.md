@@ -236,8 +236,12 @@ It's **opt-in** (unset = off) and distinct from the live `sessions.json`, which 
 chat's *current* session and is overwritten every turn. The log is the durable history: it captures
 which tools the model actually calls, token usage and latency per turn, the prompt→reply pairs for
 tuning the system prompt, and the `fresh` vs. resumed flag — handy for spotting when a chat is
-unexpectedly losing its context. It grows unbounded (append-only), so prune or rotate it yourself if
-it gets large. Logging failures are swallowed — they never fail a turn.
+unexpectedly losing its context. Logging failures are swallowed — they never fail a turn.
+
+This log is also what powers **recall**: with `TRANSCRIPT_DIR` set, the model gets a `recall` tool
+that keyword-searches the chat's past sessions, so it can look up a fact or decision from weeks ago
+that has fallen out of the live context instead of claiming it has no record. Each session is its own
+file, so old ones can be pruned or archived independently.
 
 ## Agents & tool scoping
 
