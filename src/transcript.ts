@@ -20,6 +20,8 @@ export type TurnRecord = {
   model: string;
   usage?: unknown;
   steps?: number;
+  /** True when the turn was cut off at the maxSteps cap (see AskResult.truncated). */
+  truncated?: boolean;
   /** Wall-clock duration of the agent turn, milliseconds. */
   ms: number;
 };

@@ -169,10 +169,15 @@ architectures. (The CI workflow builds the arm64 image under QEMU emulation.)
   conversation with the agent.
 - `/plan` — plan the upcoming dinners and post an **interactive plan card** (see
   [Meal-plan cards](#meal-plan-cards)). You can also just ask (*"plan our dinners this week"*).
+- `/librarian <task>` — hand a recipe-library job to the **librarian** sub-agent (cleanup, fixing
+  ingredients/steps, enriching, importing). You can also just ask (see [Agents & tool
+  scoping](#agents--tool-scoping)).
 - `/schedules` — list this chat's scheduled prompts with inline buttons to **run now**,
   **pause/resume**, and **delete** each one.
 - `/settings` — show this chat's settings; `/setlocation <place>`, `/setprompt <text>`,
   `/setdays <1-14>`, and `/resetsettings` change them (see [Per-chat settings](#per-chat-settings)).
+- `/tools` — diagnostic: list every connected MCP tool (the full catalog). The agents each run on a
+  scoped subset; this shows what's available to add to a scope.
 - Any other text message is sent to the agent as a new turn (continuing the chat's existing
   conversation), with a "typing…" indicator while it works. Long replies are split into chunks
   under Telegram's 4096-character message cap.
@@ -309,14 +314,22 @@ file, so old ones can be pruned or archived independently.
 
 ## Agents & tool scoping
 
-The bot runs a **meal-planning agent** (the household assistant) scoped to ~16 Mealie tools — the
-meal-plan, recipe-search, cleanup, and shopping-list ones — rather than all ~130 the server exposes.
-A smaller, relevant tool surface makes the model's tool selection far more reliable. Recipe creation
-is delegated to a **recipe sub-agent**: the planner calls `find_or_create_recipe`, which runs a
-focused, *isolated* nested turn with only the recipe tools (search / create / import) and returns the
-recipe's title and slug — so the planning thread stays clean and the sub-agent can't wander into meal
-plans or shopping lists. Agent definitions (persona + scoped tools) live in
-[`src/agents.ts`](src/agents.ts).
+The bot runs a **meal-planning agent** (the household assistant) scoped to a dozen-odd Mealie tools —
+the meal-plan, recipe-search, and shopping-list ones — rather than all ~130 the server exposes. A
+smaller, relevant tool surface makes the model's tool selection far more reliable. Two focused
+**sub-agents** own the rest, each invoked by the planner as a single tool that runs an *isolated*
+nested turn and returns a short summary — so the planning thread stays clean and neither sub-agent
+can wander into meal plans or shopping lists:
+
+- **Recipe sub-agent** (`find_or_create_recipe`) — finds a recipe by name, or creates/imports it if
+  it doesn't exist, returning its title and slug.
+- **Librarian sub-agent** (`tidy_recipe_library`) — recipe-library upkeep: cleaning up messy
+  recipes, fixing parsed ingredients, linking/normalizing steps, enriching sparse recipes, and
+  importing or creating recipes (including the import queue). Ask in plain language (*"clean up any
+  recipes that need it"*) or use `/librarian <task>`.
+
+Agent definitions (persona + scoped tools) live in [`src/agents.ts`](src/agents.ts). To see your
+server's full tool catalog when deciding what to add to a scope, run `/tools`.
 
 ## Adding more MCP servers
 

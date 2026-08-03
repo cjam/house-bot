@@ -126,9 +126,9 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...BASE_ENV, SYSTEM_PROMPT: "   " }).systemPrompt).toBe(DEFAULT_SYSTEM_PROMPT);
   });
 
-  test("defaults maxSteps to 12 and webSearch off", () => {
+  test("defaults maxSteps to 20 and webSearch off", () => {
     const config = loadConfig(BASE_ENV);
-    expect(config.maxSteps).toBe(12);
+    expect(config.maxSteps).toBe(20);
     expect(config.webSearch).toBe(false);
   });
 

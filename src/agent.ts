@@ -17,6 +17,12 @@ export type AskResult = {
   messages: ModelMessage[];
   /** The assistant's text reply. */
   text: string;
+  /**
+   * True when the tool loop stopped at the `maxSteps` cap with the model still
+   * mid-tool-use (finishReason "tool-calls") — i.e. the turn was cut off before a
+   * final answer. The caller can surface this instead of sending an empty reply.
+   */
+  truncated?: boolean;
   /** Token usage for the turn, passed through from the SDK (shape is provider-defined). */
   usage?: unknown;
   /** How many steps the tool loop took. */
@@ -47,9 +53,16 @@ export async function ask(params: AskParams): Promise<AskResult> {
     (step.toolCalls ?? []).map((tc: any) => ({ name: tc.toolName, args: tc.input ?? tc.args })),
   );
 
+  // finishReason "tool-calls" out of generateText means the loop stopped while the
+  // model still wanted to call tools — only possible when our stepCountIs cap cut
+  // it off. On a truncated turn keep the (possibly empty) partial text so the
+  // caller can add its own notice; otherwise fall back to the placeholder.
+  const truncated = result.finishReason === "tool-calls";
+
   return {
     messages: [...sent, ...result.response.messages],
-    text: result.text || "(no response)",
+    text: result.text || (truncated ? "" : "(no response)"),
+    truncated,
     usage: result.usage,
     steps: steps.length || 1,
     toolCalls,

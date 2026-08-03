@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ToolSet } from "ai";
-import { pickTools, plannerAgent, recipeAgent } from "./agents";
+import { pickTools, plannerAgent, recipeAgent, librarianAgent } from "./agents";
 
 const fakeTools = (names: string[]): ToolSet =>
   Object.fromEntries(names.map((n) => [n, { description: n } as any]));
@@ -41,6 +41,34 @@ describe("plannerAgent", () => {
   test("delegates recipe creation — it does not carry create/import tools", () => {
     expect(plannerAgent.mcpTools).not.toContain("mealie_create_recipe");
     expect(plannerAgent.mcpTools).not.toContain("mealie_import_and_cleanup_recipe");
+  });
+
+  test("delegates library upkeep — it does not carry cleanup tools", () => {
+    expect(plannerAgent.mcpTools).not.toContain("mealie_get_recipes_needing_cleanup");
+    expect(plannerAgent.mcpTools).not.toContain("mealie_cleanup_recipe");
+  });
+});
+
+describe("librarianAgent", () => {
+  test("owns the cleanup + edit/enrich + import tools, but no meal-plan or shopping tools", () => {
+    for (const key of [
+      "mealie_get_recipes_needing_cleanup",
+      "mealie_cleanup_recipe",
+      "mealie_fix_ingredient",
+      "mealie_link_recipe_steps",
+      "mealie_enrich_recipe",
+      "mealie_import_and_cleanup_recipe",
+    ]) {
+      expect(librarianAgent.mcpTools).toContain(key);
+    }
+    expect(librarianAgent.mcpTools).not.toContain("mealie_replace_week_meal_plan");
+    expect(librarianAgent.mcpTools).not.toContain("mealie_get_shopping_list_items");
+  });
+
+  test("its persona is scoped to the library and warns off plans/lists", () => {
+    const p = librarianAgent.systemPrompt.toLowerCase();
+    expect(p).toContain("librarian");
+    expect(p).toContain("never touch meal plans");
   });
 });
 

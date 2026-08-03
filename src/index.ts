@@ -16,8 +16,9 @@ import { createSettingsStore, type SettingsStore } from "./settings";
 import { createSettingsTools, resolveEffective, renderSettings } from "./settings-tools";
 import { geocode } from "./geocode";
 import { createTranscriptLogger, type TranscriptLogger } from "./transcript";
-import { plannerAgent, recipeAgent, pickTools } from "./agents";
+import { plannerAgent, recipeAgent, librarianAgent, pickTools } from "./agents";
 import { createRecipeTool } from "./recipe-tool";
+import { createLibrarianTool } from "./librarian-tool";
 import { createRecallTool } from "./recall";
 import { createPlanStore } from "./plan-draft";
 import { createPlanTools } from "./plan-tools";
@@ -108,6 +109,12 @@ export type BotDeps = {
   modelFor: (slug?: string) => LanguageModel;
   /** MCP tools (plus any provider web-search tool); per-turn tools are merged on top. */
   tools: ToolSet;
+  /**
+   * Every connected MCP tool's (namespaced) name, for the `/tools` diagnostic.
+   * The agents run on a scoped subset; this is the full catalog, used to decide
+   * what to add to an agent's scope. Omitted in tests → `/tools` reports none.
+   */
+  mcpToolNames?: string[];
   /**
    * Per-chat settings. When provided, the bot wires the `/settings` commands and
    * settings agent tools, and resolves each turn's prompt/location/timezone/
@@ -231,7 +238,14 @@ export function createBot(deps: BotDeps): Bot {
     const sessionId = args.useSession
       ? await deps.sessionStore.set(args.chatId, result.messages)
       : newSessionId();
-    await sendReply(bot.api, args.chatId, result.text);
+
+    // If the turn hit the step cap mid-tool-use, say so instead of sending an
+    // empty/partial reply with no explanation. The full step history is persisted
+    // above, so "continue" resumes from where it stopped.
+    const replyText = result.truncated
+      ? `${result.text ? `${result.text}\n\n` : ""}⚠️ I hit my step limit partway through, so this may be unfinished. Say “continue” and I’ll pick up where I left off.`
+      : result.text;
+    await sendReply(bot.api, args.chatId, replyText);
 
     // Append the turn to the transcript log (no-op when disabled; never throws).
     await deps.transcript?.log({
@@ -242,28 +256,15 @@ export function createBot(deps: BotDeps): Bot {
       fresh: priorMessages.length === 0,
       priorMessages: priorMessages.length,
       prompt: args.prompt,
-      reply: result.text,
+      reply: replyText,
       tools: result.toolCalls ?? [],
       model: eff.modelSlug ?? deps.config.model,
       usage: result.usage,
       steps: result.steps,
+      truncated: result.truncated,
       ms: Date.now() - startedAt,
     });
   }
-
-  bot.on("message:text", async (ctx) => {
-    const chatId = ctx.chat.id;
-    await ctx.replyWithChatAction("typing");
-    try {
-      await runTurn({ chatId, prompt: ctx.message.text, useSession: true, trigger: "message" });
-    } catch (err) {
-      console.error(
-        `Agent turn failed for chat ${chatId}:`,
-        err instanceof Error ? err.message : err,
-      );
-      await ctx.reply(errorReplyFor(err));
-    }
-  });
 
   bot.command("plan", async (ctx) => {
     await ctx.replyWithChatAction("typing");
@@ -281,6 +282,46 @@ export function createBot(deps: BotDeps): Bot {
       );
       await ctx.reply(errorReplyFor(err));
     }
+  });
+
+  bot.command("librarian", async (ctx) => {
+    const task = ctx.match.trim();
+    if (!task) {
+      await ctx.reply(
+        "Usage: /librarian <task> — hand a recipe-library job to the librarian, e.g.\n" +
+          "/librarian clean up any recipes that need it\n" +
+          "/librarian fix the ingredients on the Butter Chicken recipe\n" +
+          "(You can also just ask me in plain language.)",
+      );
+      return;
+    }
+    await ctx.replyWithChatAction("typing");
+    try {
+      await runTurn({
+        chatId: ctx.chat.id,
+        prompt: `Use the recipe librarian (tidy_recipe_library) to handle this: ${task}`,
+        useSession: true,
+        trigger: "message",
+      });
+    } catch (err) {
+      console.error(
+        `/librarian turn failed for chat ${ctx.chat.id}:`,
+        err instanceof Error ? err.message : err,
+      );
+      await ctx.reply(errorReplyFor(err));
+    }
+  });
+
+  // Diagnostic: list every connected MCP tool (the full catalog). The agents run
+  // on a scoped subset; this is how you see what's available to add to a scope.
+  bot.command("tools", async (ctx) => {
+    const names = deps.mcpToolNames ?? [];
+    if (names.length === 0) {
+      await ctx.reply("No MCP tools are connected.");
+      return;
+    }
+    const body = [...names].sort().join("\n");
+    await sendReply(bot.api, ctx.chat.id, `Connected MCP tools (${names.length}):\n\n${body}`);
   });
 
   if (deps.settingsStore) {
@@ -500,6 +541,24 @@ export function createBot(deps: BotDeps): Bot {
     await ctx.answerCallbackQuery();
   });
 
+  // Catch-all for ordinary (non-command) text — registered LAST so every command
+  // handler above gets first crack at a "/…" message. grammY runs middleware in
+  // registration order and command handlers don't call next(), so a command is
+  // handled by its own handler; anything else falls through to here as a turn.
+  bot.on("message:text", async (ctx) => {
+    const chatId = ctx.chat.id;
+    await ctx.replyWithChatAction("typing");
+    try {
+      await runTurn({ chatId, prompt: ctx.message.text, useSession: true, trigger: "message" });
+    } catch (err) {
+      console.error(
+        `Agent turn failed for chat ${chatId}:`,
+        err instanceof Error ? err.message : err,
+      );
+      await ctx.reply(errorReplyFor(err));
+    }
+  });
+
   // Concise last-resort handler so an unexpected error logs a one-line message
   // instead of dumping the entire grammY context object to the console.
   bot.catch((err) => {
@@ -554,9 +613,18 @@ async function main() {
   }
   const recipeTool = createRecipeTool({ ask: realAsk, modelFor, tools: recipeMcpTools, agent: recipeAgent });
 
+  // The librarian sub-agent: recipe-library upkeep (cleanup, enrich, import),
+  // exposed to the planner as the tidy_recipe_library tool.
+  const { tools: librarianMcpTools, missing: librarianMissing } = pickTools(mcp.tools, librarianAgent.mcpTools);
+  if (librarianMissing.length > 0) {
+    console.log(`Librarian: ${librarianMissing.length} scoped tool(s) not found: ${librarianMissing.join(", ")}`);
+  }
+  const librarianTool = createLibrarianTool({ ask: realAsk, modelFor, tools: librarianMcpTools, agent: librarianAgent });
+
   const tools: ToolSet = {
     ...plannerMcpTools,
     ...recipeTool,
+    ...librarianTool,
     ...(webSearchTool ? { web_search: webSearchTool } : {}),
   };
   console.log(
@@ -571,6 +639,7 @@ async function main() {
     ask: realAsk,
     modelFor,
     tools,
+    mcpToolNames: Object.keys(mcp.tools),
     settingsStore,
     transcript,
     store: scheduleStore,
@@ -588,6 +657,7 @@ async function main() {
   await bot.api
     .setMyCommands([
       { command: "plan", description: "Plan meals & show an interactive plan card" },
+      { command: "librarian", description: "Ask the librarian to tidy the recipe library" },
       { command: "schedules", description: "List & manage scheduled prompts" },
       { command: "settings", description: "Show this chat's settings" },
       { command: "setdays", description: "Set how many days to plan meals for" },

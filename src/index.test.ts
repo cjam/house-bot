@@ -311,3 +311,40 @@ describe("createBot /reset", () => {
     expect(sessionStore.get(100)).toBeUndefined();
   });
 });
+
+describe("createBot /tools", () => {
+  test("lists the catalog via its own handler, not the agent (command isn't shadowed)", async () => {
+    const sent: any[] = [];
+    const askCalls: AskParams[] = [];
+    const sessionStore = await tempSessionStore();
+
+    const bot = createBot({
+      config: baseConfig(),
+      sessionStore,
+      ask: async (params: AskParams): Promise<AskResult> => {
+        askCalls.push(params);
+        return { messages: [], text: "reply" };
+      },
+      modelFor: () => MODEL,
+      tools: TOOLS,
+      mcpToolNames: ["mealie_get_all_recipes", "mealie_cleanup_recipe"],
+    });
+    bot.botInfo = BOT_INFO;
+    bot.api.config.use((_prev, method, payload) => {
+      sent.push({ method, payload });
+      return Promise.resolve({ ok: true, result: true } as never);
+    });
+
+    await bot.handleUpdate(commandUpdate(1, 100, "/tools"));
+
+    // sendReply emits MarkdownV2, so parens/underscores arrive escaped — assert on
+    // the escaping-invariant fragments.
+    const reply = sent.find((m) => m.method === "sendMessage");
+    expect(reply).toBeDefined();
+    expect(String(reply.payload.text)).toContain("Connected MCP tools");
+    expect(String(reply.payload.text)).toContain("cleanup");
+    // The command must be handled by its own handler, not swallowed by the
+    // catch-all text handler and sent to the agent.
+    expect(askCalls.length).toBe(0);
+  });
+});

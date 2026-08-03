@@ -145,7 +145,7 @@ export function loadConfig(env: Env = process.env): Config {
     provider,
     apiKey: required(env, spec.keyEnv),
     model: env[spec.modelEnv] || spec.defaultModel,
-    maxSteps: Number(env.MAX_STEPS || 12),
+    maxSteps: Number(env.MAX_STEPS || 20),
     planDays: Number(env.PLAN_DAYS || 5),
     webSearch: env.WEB_SEARCH === "true",
     sessionFile: env.SESSION_FILE || "./data/sessions.json",
