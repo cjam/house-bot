@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { Bot, InlineKeyboard, type Api } from "grammy";
 import { run, sequentialize } from "@grammyjs/runner";
 import telegramifyMarkdown from "telegramify-markdown";
@@ -135,7 +136,30 @@ export type BotDeps = {
   makeScheduler?: (onFire: (schedule: Schedule) => Promise<void>) => Scheduler;
   /** Optional per-chat transcript logger; omitted (or no-op) when disabled. */
   transcript?: TranscriptLogger;
+  /** Injectable fetch for downloading Telegram files (photos); defaults to global fetch. */
+  fetchImpl?: typeof fetch;
 };
+
+/** Prompt used for a photo sent without a caption. */
+const DEFAULT_PHOTO_PROMPT =
+  "Here's a photo. If it's a recipe, read its title, ingredients, and steps and offer to save it " +
+  "to our Mealie library; otherwise tell me what it is and how it relates to meal planning.";
+
+/** Best-effort image media type from a Telegram file path's extension. */
+function mediaTypeForPath(path: string): string {
+  switch (path.toLowerCase().split(".").pop()) {
+    case "png":
+      return "image/png";
+    case "webp":
+      return "image/webp";
+    case "gif":
+      return "image/gif";
+    case "heic":
+      return "image/heic";
+    default:
+      return "image/jpeg";
+  }
+}
 
 export function createBot(deps: BotDeps): Bot {
   const bot = new Bot(deps.config.telegramToken);
@@ -181,6 +205,8 @@ export function createBot(deps: BotDeps): Bot {
     prompt: string;
     useSession: boolean;
     trigger: "message" | "schedule";
+    /** Image attachments for a vision turn (a photo the user sent). */
+    images?: { data: Uint8Array; mediaType: string }[];
   }): Promise<void> {
     const priorMessages = args.useSession ? (deps.sessionStore.get(args.chatId) ?? []) : [];
     // Operational breadcrumb: shows whether a chat's history is actually being
@@ -232,6 +258,7 @@ export function createBot(deps: BotDeps): Bot {
       model: deps.modelFor(eff.modelSlug),
       tools: { ...deps.tools, ...weatherTools, ...planTools, ...scheduleTools, ...settingsTools, ...recallTools },
       maxSteps: eff.maxSteps,
+      images: args.images,
     });
     // Persisting returns the session id these messages belong to; an isolated
     // (fresh scheduled) run has no stored session, so give it a standalone id.
@@ -541,6 +568,66 @@ export function createBot(deps: BotDeps): Bot {
     await ctx.answerCallbackQuery();
   });
 
+  // Download a Telegram file (photo/document) to bytes for a vision turn. Two
+  // steps: getFile resolves the file_path, then we fetch it from Telegram's file
+  // endpoint (which needs the bot token in the URL).
+  const doFetch = deps.fetchImpl ?? fetch;
+  async function downloadTelegramImage(
+    fileId: string,
+    mimeHint?: string,
+  ): Promise<{ data: Uint8Array; mediaType: string }> {
+    const file = await bot.api.getFile(fileId);
+    if (!file.file_path) throw new Error("Telegram returned no file_path for the image.");
+    const url = `https://api.telegram.org/file/bot${deps.config.telegramToken}/${file.file_path}`;
+    const res = await doFetch(url);
+    if (!res.ok) throw new Error(`Image download failed: HTTP ${res.status}.`);
+    return {
+      data: new Uint8Array(await res.arrayBuffer()),
+      mediaType: mimeHint || mediaTypeForPath(file.file_path),
+    };
+  }
+
+  /** Shared handling for an inbound image (photo or image document). */
+  async function handleImage(
+    ctx: { chat: { id: number }; reply: (t: string) => Promise<unknown>; replyWithChatAction: (a: "typing") => Promise<unknown> },
+    fileId: string,
+    caption: string | undefined,
+    mimeHint: string | undefined,
+  ): Promise<void> {
+    const chatId = ctx.chat.id;
+    await ctx.replyWithChatAction("typing");
+    try {
+      const image = await downloadTelegramImage(fileId, mimeHint);
+      await runTurn({
+        chatId,
+        prompt: caption?.trim() || DEFAULT_PHOTO_PROMPT,
+        images: [image],
+        useSession: true,
+        trigger: "message",
+      });
+    } catch (err) {
+      console.error(`Image turn failed for chat ${chatId}:`, err instanceof Error ? err.message : err);
+      await ctx.reply(errorReplyFor(err));
+    }
+  }
+
+  // Photos: Telegram sends several sizes; the last is the largest.
+  bot.on("message:photo", async (ctx) => {
+    const largest = ctx.message.photo.at(-1);
+    if (!largest) return;
+    await handleImage(ctx, largest.file_id, ctx.message.caption, undefined);
+  });
+
+  // Documents: only image files (a recipe scan sent as a file rather than a photo).
+  bot.on("message:document", async (ctx) => {
+    const doc = ctx.message.document;
+    if (!doc.mime_type?.startsWith("image/")) {
+      await ctx.reply("I can read photos and image files. Send a recipe as a photo or an image file.");
+      return;
+    }
+    await handleImage(ctx, doc.file_id, ctx.message.caption, doc.mime_type);
+  });
+
   // Catch-all for ordinary (non-command) text — registered LAST so every command
   // handler above gets first crack at a "/…" message. grammY runs middleware in
   // registration order and command handlers don't call next(), so a command is
@@ -673,14 +760,22 @@ async function main() {
 
   // Deploy notes: if this build's top release version is newer than what we last
   // announced (persisted in the data volume), post the release notes to each
-  // allowed chat. Best-effort — never let it hold up or crash startup.
+  // allowed chat. Best-effort — never let it hold up or crash startup. The marker
+  // path is logged (absolute) so you can confirm it's landing in the mounted data
+  // volume; if it reads "none" on every boot, the volume isn't persisting.
   try {
     const deployStore = createDeployStore(config.deployStateFile);
     await deployStore.load();
+    const markerPath = resolve(config.deployStateFile);
+    console.log(`Deploy marker: ${markerPath} → last announced ${deployStore.get() ?? "none"}.`);
     const announced = await announceUpdates({
       releases: RELEASES,
       lastAnnounced: deployStore.get(),
       chatIds: config.allowedChatIds,
+      persist: async (version) => {
+        await deployStore.set(version);
+        console.log(`Deploy marker written: ${version} → ${markerPath}.`);
+      },
       send: async (chatId, markdownV2, plain) => {
         try {
           await bot.api.sendMessage(chatId, markdownV2, { parse_mode: "MarkdownV2" });
@@ -693,9 +788,8 @@ async function main() {
         }
       },
     });
-    if (announced) {
-      await deployStore.set(announced);
-      console.log(`Announced release ${announced} to ${config.allowedChatIds.size} chat(s).`);
+    if (announced.length > 0) {
+      console.log(`Announced ${announced.length} release(s) to ${config.allowedChatIds.size} chat(s).`);
     }
   } catch (err) {
     console.error("Release-notes announcement failed:", err instanceof Error ? err.message : err);

@@ -178,6 +178,9 @@ architectures. (The CI workflow builds the arm64 image under QEMU emulation.)
   `/setdays <1-14>`, and `/resetsettings` change them (see [Per-chat settings](#per-chat-settings)).
 - `/tools` — diagnostic: list every connected MCP tool (the full catalog). The agents each run on a
   scoped subset; this shows what's available to add to a scope.
+- **Send a photo** (or an image file) — e.g. a picture of a recipe. The bot reads it and offers to
+  save it to your Mealie library; add a caption to steer it (*"import this and tag it dinner"*).
+  Requires a vision-capable model (the default Sonnet is; a text-only model can't read images).
 - Any other text message is sent to the agent as a new turn (continuing the chat's existing
   conversation), with a "typing…" indicator while it works. Long replies are split into chunks
   under Telegram's 4096-character message cap.
@@ -268,7 +271,10 @@ When a new build starts up, the bot posts a short "I've been updated" message to
 the release title, a few highlight bullets, and (collapsed by default) a details section using
 Telegram's expandable blockquote. It fires **once per version bump**: the last-announced version is
 stored in `data/deploy.json` (in the persisted volume), so an ordinary restart or crash-loop stays
-quiet, and a fresh install announces only the latest release rather than the whole history.
+quiet, and a fresh install announces only the latest release rather than the whole history. The
+marker is written **before** the messages are sent, so a slow or failed send (or a container killed
+mid-announce) can't cause a repeat on the next restart. Startup logs the marker's absolute path and
+last-announced version — if that reads `none` on every boot, `/app/data` isn't actually persisting.
 
 Release notes are authored in [`src/releases.ts`](src/releases.ts) — newest first. To announce a
 deploy, add an entry at the top with a new `version`, a `title`, a few short `highlights`, and

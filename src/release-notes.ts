@@ -61,23 +61,31 @@ export function plainAnnouncement(releases: Release[]): string {
 }
 
 /**
- * Announce any newer releases to each chat, then report the version to persist
- * (undefined = nothing to announce, don't touch the marker). `send` is given both
- * the MarkdownV2 and a plain fallback so the caller can retry plain if Telegram
- * rejects the formatting. Best-effort per chat is the caller's concern.
+ * Announce any newer releases to each chat and return what was announced (empty
+ * when up to date). Crucially, the marker is persisted *before* the sends: showing
+ * the notes once — or, worst case, missing them if a send fails — beats spamming
+ * them on every restart when a send is slow or the container is killed mid-
+ * announce. `send` gets both the MarkdownV2 and a plain fallback so the caller can
+ * retry plain if Telegram rejects the formatting.
  */
 export async function announceUpdates(opts: {
   releases: Release[];
   lastAnnounced: string | undefined;
   chatIds: Iterable<number>;
+  /** Persist the new marker. Called BEFORE any send, so an interrupted or failed
+   *  send never causes a re-announcement on the next restart. */
+  persist: (version: string) => Promise<void>;
   send: (chatId: number, markdownV2: string, plain: string) => Promise<void>;
-}): Promise<string | undefined> {
+}): Promise<Release[]> {
   const toAnnounce = releasesToAnnounce(opts.releases, opts.lastAnnounced);
-  if (toAnnounce.length === 0) return undefined;
+  if (toAnnounce.length === 0) return [];
+
+  await opts.persist(opts.releases[0]!.version);
+
   const markdownV2 = renderAnnouncement(toAnnounce);
   const plain = plainAnnouncement(toAnnounce);
   for (const chatId of opts.chatIds) {
     await opts.send(chatId, markdownV2, plain);
   }
-  return opts.releases[0]?.version;
+  return toAnnounce;
 }

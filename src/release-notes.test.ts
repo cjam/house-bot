@@ -83,32 +83,41 @@ describe("plainAnnouncement", () => {
 });
 
 describe("announceUpdates", () => {
-  test("sends to each chat and returns the version to persist", async () => {
-    const sent: { chatId: number; md: string }[] = [];
-    const version = await announceUpdates({
+  test("persists the version BEFORE sending, and returns what it announced", async () => {
+    const order: string[] = [];
+    const announced = await announceUpdates({
       releases: list,
       lastAnnounced: "0.2.0",
       chatIds: [1, 2],
+      persist: async (v) => {
+        order.push(`persist:${v}`);
+      },
       send: async (chatId, markdownV2) => {
-        sent.push({ chatId, md: markdownV2 });
+        order.push(`send:${chatId}`);
+        expect(markdownV2).toContain("Release 0\\.3\\.0");
       },
     });
-    expect(version).toBe("0.3.0");
-    expect(sent.map((s) => s.chatId)).toEqual([1, 2]);
-    expect(sent[0]!.md).toContain("Release 0\\.3\\.0");
+    expect(announced.map((r) => r.version)).toEqual(["0.3.0"]);
+    // Marker is written first so a failed/interrupted send can't cause a repeat.
+    expect(order).toEqual(["persist:0.3.0", "send:1", "send:2"]);
   });
 
-  test("sends nothing and returns undefined when up to date", async () => {
-    let calls = 0;
-    const version = await announceUpdates({
+  test("does nothing (no persist, no send) when up to date", async () => {
+    let persists = 0;
+    let sends = 0;
+    const announced = await announceUpdates({
       releases: list,
       lastAnnounced: "0.3.0",
       chatIds: [1, 2],
+      persist: async () => {
+        persists++;
+      },
       send: async () => {
-        calls++;
+        sends++;
       },
     });
-    expect(version).toBeUndefined();
-    expect(calls).toBe(0);
+    expect(announced).toEqual([]);
+    expect(persists).toBe(0);
+    expect(sends).toBe(0);
   });
 });

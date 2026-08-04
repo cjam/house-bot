@@ -72,6 +72,39 @@ describe("ask", () => {
     expect(result.truncated).toBe(false);
   });
 
+  test("sends image parts to the model and persists a text-only history entry", async () => {
+    let seen: unknown;
+    const model = new MockLanguageModelV4({
+      doGenerate: async (options: any) => {
+        seen = options.prompt;
+        return {
+          content: [{ type: "text" as const, text: "That's a lasagna recipe." }],
+          finishReason: { unified: "stop" as const, raw: "stop" },
+          usage: USAGE,
+          warnings: [],
+        };
+      },
+    });
+
+    const result = await ask({
+      messages: [],
+      prompt: "save this",
+      systemPrompt: "x",
+      model,
+      tools: {},
+      maxSteps: 2,
+      images: [{ data: new Uint8Array([1, 2, 3, 4]), mediaType: "image/jpeg" }],
+    });
+
+    // The model received the image (converted to a file/image content part).
+    expect(JSON.stringify(seen)).toContain("image/jpeg");
+    // History keeps a text-only placeholder — JSON-serializable, no raw bytes.
+    const user = result.messages.find((m) => m.role === "user");
+    expect(typeof user!.content).toBe("string");
+    expect(user!.content).toContain("save this");
+    expect(user!.content).toContain("photo");
+  });
+
   test("flags truncation (no placeholder) when the step cap cuts off a tool call", async () => {
     // A model that always wants to call a tool; with maxSteps=1 the loop stops
     // after the first tool step, so generateText reports finishReason "tool-calls".

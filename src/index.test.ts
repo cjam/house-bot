@@ -120,6 +120,23 @@ function commandUpdate(updateId: number, chatId: number, command: string): Updat
   return update;
 }
 
+function photoUpdate(updateId: number, chatId: number, caption?: string): Update {
+  return {
+    update_id: updateId,
+    message: {
+      message_id: updateId,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: chatId, type: "private", first_name: "Test" },
+      from: { id: chatId, is_bot: false, first_name: "Test" },
+      photo: [
+        { file_id: "small", file_unique_id: "su", width: 90, height: 90 },
+        { file_id: "large", file_unique_id: "lu", width: 1280, height: 1280 },
+      ],
+      caption,
+    },
+  } as unknown as Update;
+}
+
 async function tempSessionStore() {
   const { mkdtempSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
@@ -309,6 +326,60 @@ describe("createBot /reset", () => {
     await bot.handleUpdate(commandUpdate(1, 100, "/reset"));
 
     expect(sessionStore.get(100)).toBeUndefined();
+  });
+});
+
+describe("createBot photos", () => {
+  function photoBot(askCalls: AskParams[]) {
+    const fetchImpl = (async () =>
+      ({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }) as Response) as unknown as typeof fetch;
+    return async () => {
+      const sessionStore = await tempSessionStore();
+      const bot = createBot({
+        config: baseConfig(),
+        sessionStore,
+        ask: async (p: AskParams): Promise<AskResult> => {
+          askCalls.push(p);
+          return { messages: [], text: "It's a recipe." };
+        },
+        modelFor: () => MODEL,
+        tools: TOOLS,
+        fetchImpl,
+      });
+      bot.botInfo = BOT_INFO;
+      bot.api.config.use((_prev, method) => {
+        if (method === "getFile") {
+          return Promise.resolve({
+            ok: true,
+            result: { file_id: "large", file_unique_id: "lu", file_path: "photos/file_1.jpg" },
+          } as never);
+        }
+        return Promise.resolve({ ok: true, result: true } as never);
+      });
+      return bot;
+    };
+  }
+
+  test("downloads a photo and runs a vision turn with the image and caption", async () => {
+    const askCalls: AskParams[] = [];
+    const bot = await photoBot(askCalls)();
+
+    await bot.handleUpdate(photoUpdate(1, 100, "please save this"));
+
+    expect(askCalls.length).toBe(1);
+    expect(askCalls[0]!.images?.length).toBe(1);
+    expect(askCalls[0]!.images?.[0]?.mediaType).toBe("image/jpeg");
+    expect(askCalls[0]!.prompt).toBe("please save this");
+  });
+
+  test("falls back to a default prompt when the photo has no caption", async () => {
+    const askCalls: AskParams[] = [];
+    const bot = await photoBot(askCalls)();
+
+    await bot.handleUpdate(photoUpdate(2, 100));
+
+    expect(askCalls.length).toBe(1);
+    expect(askCalls[0]!.prompt.toLowerCase()).toContain("recipe");
   });
 });
 

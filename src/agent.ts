@@ -1,4 +1,11 @@
-import { generateText, stepCountIs, type LanguageModel, type ModelMessage, type ToolSet } from "ai";
+import {
+  generateText,
+  stepCountIs,
+  type LanguageModel,
+  type ModelMessage,
+  type ToolSet,
+  type UserContent,
+} from "ai";
 
 export type AskParams = {
   /** Prior conversation for this chat (empty for a fresh session). */
@@ -10,6 +17,12 @@ export type AskParams = {
   tools: ToolSet;
   /** Max steps in the agentic tool loop before the run stops. */
   maxSteps: number;
+  /**
+   * Optional image attachments for a vision turn (e.g. a photo of a recipe).
+   * Sent to the model alongside the prompt; requires a vision-capable model.
+   * Not kept verbatim in history — see the note on persistence below.
+   */
+  images?: { data: Uint8Array; mediaType: string }[];
 };
 
 export type AskResult = {
@@ -38,7 +51,18 @@ export type AskResult = {
  * tool-call telemetry for the transcript log.
  */
 export async function ask(params: AskParams): Promise<AskResult> {
-  const sent: ModelMessage[] = [...params.messages, { role: "user", content: params.prompt }];
+  const hasImages = !!params.images?.length;
+  // A vision turn sends the prompt text plus each image as content parts; a plain
+  // turn is just the string.
+  const userContent: UserContent = hasImages
+    ? [
+        ...(params.prompt ? [{ type: "text" as const, text: params.prompt }] : []),
+        // A "file" part with an image/* mediaType is the current form; the older
+        // "image" part is deprecated in the AI SDK.
+        ...params.images!.map((img) => ({ type: "file" as const, data: img.data, mediaType: img.mediaType })),
+      ]
+    : params.prompt;
+  const sent: ModelMessage[] = [...params.messages, { role: "user", content: userContent }];
 
   const result = await generateText({
     model: params.model,
@@ -59,8 +83,18 @@ export async function ask(params: AskParams): Promise<AskResult> {
   // caller can add its own notice; otherwise fall back to the placeholder.
   const truncated = result.finishReason === "tool-calls";
 
+  // Persist a text-only version of a vision turn: raw image bytes don't round-trip
+  // through the JSON session store and would bloat every later turn. The model's
+  // reply already captured what the image contained, so a short note is enough.
+  const persistedUser: ModelMessage = {
+    role: "user",
+    content: hasImages
+      ? [params.prompt, `[${params.images!.length} photo(s) attached]`].filter(Boolean).join(" ")
+      : params.prompt,
+  };
+
   return {
-    messages: [...sent, ...result.response.messages],
+    messages: [...params.messages, persistedUser, ...result.response.messages],
     text: result.text || (truncated ? "" : "(no response)"),
     truncated,
     usage: result.usage,
